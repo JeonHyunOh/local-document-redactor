@@ -15,6 +15,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from document_redactor import batch_service, excel_service, file_service
@@ -107,7 +108,7 @@ def render_single_file() -> None:
     uploaded = st.file_uploader("파일 업로드 (.xlsx / .xlsm / 텍스트 PDF)", type=["xlsx", "xlsm", "pdf"])
 
     if st.button("🔍 검사하기", disabled=not (uploaded and keywords), help="파일을 수정하지 않고 검사만 합니다."):
-        for key in ("s_report", "s_saved", "s_edit", "s_verify"):
+        for key in ("s_report", "s_saved", "s_edit", "s_verify", "s_editor", "s_approve", "s_all_selected"):
             st.session_state.pop(key, None)
         try:
             saved_path = file_service.save_upload(uploaded.getvalue(), uploaded.name, WORKDIR)
@@ -131,33 +132,41 @@ def render_single_file() -> None:
     c1.metric("발견 건수", f"{report.total_matches}건")
     c2.metric("파일 유형", report.file_type.value.upper())
 
+    if report.total_matches == 0:
+        st.info("발견된 키워드가 없습니다.")
+        return
+
+    # 삭제 방식 (Excel만)
     if report.file_type is FileType.PDF:
-        if report.pdf_matches:
-            st.dataframe(
-                [{"페이지": m.page, "키워드": m.keyword, "개수": m.count, "문맥": m.context or ""} for m in report.pdf_matches],
-                use_container_width=True,
-            )
         st.warning("PDF는 redaction 후 해당 위치에 빈 공간이 남을 수 있습니다.")
         excel_action = None
+        base_matches = report.pdf_matches
+        rows = [{"삭제": True, "페이지": m.page, "키워드": m.keyword, "개수": m.count, "문맥": m.context or ""} for m in base_matches]
+        locked = ["페이지", "키워드", "개수", "문맥"]
     else:
         st.radio("Excel 삭제 방식", list(_LABEL_EXCEL_ACTION), key="excel_label", horizontal=True)
         excel_action = _LABEL_EXCEL_ACTION[st.session_state.get("excel_label", "키워드만 제거")]
+        base_matches = report.excel_matches
         previewed = excel_service.preview(report, excel_action)
-        if previewed:
-            st.dataframe(
-                [{"시트": m.sheet_name, "셀": m.cell, "키워드": m.keyword, "원본 값": m.original_value, "예상 값": m.expected_value} for m in previewed],
-                use_container_width=True,
-            )
+        rows = [{"삭제": True, "시트": m.sheet_name, "셀": m.cell, "키워드": m.keyword, "원본 값": m.original_value, "예상 값": m.expected_value} for m in previewed]
+        locked = ["시트", "셀", "키워드", "원본 값", "예상 값"]
+
+    st.caption("체크된 항목만 삭제됩니다. 기본은 전체 선택이며, 남기고 싶은 항목은 체크를 해제하세요.")
+    edited = st.data_editor(pd.DataFrame(rows), disabled=locked, hide_index=True, use_container_width=True, key="s_editor")
+    keep_mask = edited["삭제"].tolist()
+    selected_matches = [base_matches[i] for i, keep in enumerate(keep_mask) if keep]
 
     st.divider()
-    can_edit = report.total_matches > 0
-    approved = st.checkbox("위 내용을 확인했으며 삭제 실행을 승인합니다.", disabled=not can_edit, key="s_approve")
+    st.caption(f"선택된 항목: {len(selected_matches)} / {len(base_matches)}")
+    can_edit = len(selected_matches) > 0
+    approved = st.checkbox("위에서 체크한 항목의 삭제를 승인합니다.", disabled=not can_edit, key="s_approve")
     if st.button("🗑️ 승인하고 삭제본 생성", disabled=not (can_edit and approved), type="primary"):
         try:
             request = EditRequest(criteria=report.criteria, excel_action=excel_action or ExcelAction.REMOVE_KEYWORD, pdf_action=PdfAction.REDACT)
-            edit_result = file_service.apply_edit(st.session_state.s_saved, request, OUTPUT_DIR)
+            edit_result = file_service.apply_edit(st.session_state.s_saved, request, OUTPUT_DIR, selected=selected_matches)
             st.session_state.s_edit = edit_result
             st.session_state.s_verify = file_service.verify(Path(edit_result.output_path), report.criteria)
+            st.session_state.s_all_selected = len(selected_matches) == len(base_matches)
         except Exception as exc:
             st.error("삭제본 생성 중 오류가 발생했습니다. 결과 파일을 제공하지 않습니다.")
             st.exception(exc)
@@ -173,11 +182,14 @@ def render_single_file() -> None:
     m2.metric("삭제된 행", edit_result.rows_deleted)
     m3.metric("적용된 redaction", edit_result.redactions_applied)
 
+    all_selected = st.session_state.get("s_all_selected", True)
+    remaining = verification.remaining.total_matches if verification.remaining else 0
     if verification.clean:
-        st.success("재검증 완료: 키워드가 모두 제거되었습니다.")
-    else:
-        remaining = verification.remaining.total_matches if verification.remaining else "?"
+        st.success("재검증 완료: 결과 파일에서 선택한 키워드가 확인되지 않습니다.")
+    elif all_selected:
         st.error(f"재검증 실패: 키워드가 {remaining}건 남아 있습니다. 결과 파일을 확인하세요.")
+    else:
+        st.info(f"선택한 항목을 처리했습니다. 결과 파일에 남은 키워드 발견: {remaining}건 — 선택하지 않은 항목입니다.")
 
     output_path = Path(edit_result.output_path)
     d1, d2 = st.columns(2)

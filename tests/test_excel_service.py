@@ -153,3 +153,45 @@ def test_unsupported_extension_rejected(tmp_path: Path):
     bad.write_bytes(b"not really xls")
     with pytest.raises(ValueError, match="지원하지 않는"):
         excel_service.search(bad, _criteria("x"))
+
+
+# --------------------------------------------------------------------------- #
+# 선택 삭제 (selected)
+# --------------------------------------------------------------------------- #
+def test_selected_remove_keyword_only_selected(tmp_path: Path):
+    wb = Workbook()
+    wb.active["A1"] = "대외비 및 내부검토용"  # 한 셀에 두 키워드
+    path = tmp_path / "s.xlsx"
+    wb.save(path)
+
+    report = excel_service.search(path, _criteria("대외비", "내부검토용"))
+    chosen = [m for m in report.excel_matches if m.keyword == "대외비"]  # 대외비만 선택
+    req = EditRequest(criteria=_criteria("대외비", "내부검토용"), excel_action=ExcelAction.REMOVE_KEYWORD)
+    result = excel_service.apply_edit(path, req, tmp_path / "out", selected=chosen)
+
+    # 선택한 '대외비'만 제거되고 '내부검토용'은 남아야 한다
+    assert load_workbook(result.output_path).active["A1"].value == " 및 내부검토용"
+
+
+def test_selected_clear_cell_only_selected(sample_xlsx: Path, tmp_path: Path):
+    report = excel_service.search(sample_xlsx, _criteria("대외비"))
+    chosen = [m for m in report.excel_matches if m.sheet_name == "Sheet1"]  # Sheet1만 선택
+    req = EditRequest(criteria=_criteria("대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    result = excel_service.apply_edit(sample_xlsx, req, tmp_path / "out", selected=chosen)
+
+    wb = load_workbook(result.output_path)
+    assert wb["Sheet1"]["A1"].value is None            # 선택됨 → 비워짐
+    assert wb["Sheet2"]["A1"].value == "대외비 및 내부검토용"  # 미선택 → 유지
+    assert result.cells_changed == 1
+
+
+def test_selected_delete_row_only_selected(sample_xlsx: Path, tmp_path: Path):
+    report = excel_service.search(sample_xlsx, _criteria("대외비", "내부검토용"))
+    chosen = [m for m in report.excel_matches if m.sheet_name == "Sheet2"]  # Sheet2 행만
+    req = EditRequest(criteria=_criteria("대외비", "내부검토용"), excel_action=ExcelAction.DELETE_ROW)
+    result = excel_service.apply_edit(sample_xlsx, req, tmp_path / "out", selected=chosen)
+
+    wb = load_workbook(result.output_path)
+    assert wb["Sheet2"]["A1"].value is None                 # 선택 행 삭제
+    assert wb["Sheet1"]["A1"].value == "대외비 문서"          # 미선택 시트 유지
+    assert result.rows_deleted == 1

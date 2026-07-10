@@ -71,9 +71,12 @@ def search(path: Path, criteria: SearchCriteria) -> SearchReport:
     return _service_for(path).search(path, criteria)
 
 
-def apply_edit(path: Path, request: EditRequest, output_dir: Path) -> EditResult:
-    """파일 유형에 맞는 서비스로 편집을 위임한다(승인 후 실행)."""
-    return _service_for(path).apply_edit(path, request, output_dir)
+def apply_edit(path: Path, request: EditRequest, output_dir: Path, selected=None) -> EditResult:
+    """파일 유형에 맞는 서비스로 편집을 위임한다(승인 후 실행).
+
+    selected가 주어지면 선택된 항목만 처리한다(Excel은 ExcelMatch, PDF는 PdfMatch 목록).
+    """
+    return _service_for(path).apply_edit(path, request, output_dir, selected=selected)
 
 
 def verify(output_path: Path, criteria: SearchCriteria) -> VerificationResult:

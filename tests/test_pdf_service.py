@@ -142,6 +142,21 @@ def test_korean_pdf_search_and_redaction(tmp_path: Path):
     assert pdf_service.verify(Path(result.output_path), criteria).clean is True
 
 
+def test_selected_redaction_only_selected(sample_pdf: Path, tmp_path: Path):
+    """선택한 (페이지, 키워드)만 redaction하고 나머지는 그대로 둔다."""
+    report = pdf_service.search(sample_pdf, _criteria("CONFIDENTIAL", "Secret"))
+    chosen = [m for m in report.pdf_matches if m.keyword == "Secret"]  # page2 Secret만 선택
+
+    req = EditRequest(criteria=_criteria("CONFIDENTIAL", "Secret"), pdf_action=PdfAction.REDACT)
+    result = pdf_service.apply_edit(sample_pdf, req, tmp_path / "out", selected=chosen)
+
+    with fitz.open(result.output_path) as doc:
+        full_text = "".join(page.get_text() for page in doc)
+    assert "Secret" not in full_text          # 선택됨 → 제거
+    assert "CONFIDENTIAL" in full_text        # 미선택 → 유지
+    assert result.redactions_applied == 1
+
+
 def test_unsupported_extension_rejected(tmp_path: Path):
     bad = tmp_path / "doc.docx"
     bad.write_bytes(b"nope")

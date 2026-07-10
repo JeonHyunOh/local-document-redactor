@@ -106,11 +106,19 @@ def preview(report: SearchReport, action: ExcelAction) -> list[ExcelMatch]:
     return previewed
 
 
-def apply_edit(path: Path, request: EditRequest, output_dir: Path) -> EditResult:
+def apply_edit(
+    path: Path,
+    request: EditRequest,
+    output_dir: Path,
+    selected: list[ExcelMatch] | None = None,
+) -> EditResult:
     """승인된 편집을 실행해 ``_edited`` 접미사가 붙은 새 파일을 생성한다.
 
     원본을 덮어쓰지 않는다. DELETE_ROW은 시트별로 행을 중복 없이 모아 내림차순
     삭제해 행 번호 밀림을 방지한다.
+
+    selected가 주어지면 **그 항목(시트·셀·키워드)만** 처리한다. None이면 검색 조건에
+    매칭되는 모든 항목을 처리한다.
     """
     file_type = _resolve_file_type(path)
     keep_vba = file_type is FileType.XLSM
@@ -123,39 +131,10 @@ def apply_edit(path: Path, request: EditRequest, output_dir: Path) -> EditResult
     rows_deleted = 0
 
     try:
-        for sheet in workbook.worksheets:
-            rows_to_delete: set[int] = set()
-            for row in sheet.iter_rows():
-                for cell in row:
-                    text = _searchable_text(cell)
-                    if text is None:
-                        continue
-                    found = keyword_matcher.find_matches(text, criteria)
-                    if not found:
-                        continue
-
-                    if action is ExcelAction.REMOVE_KEYWORD:
-                        new_value = keyword_matcher.remove_keywords(
-                            text, criteria.keywords, criteria.case_sensitive
-                        )
-                        if new_value != text:
-                            cell.value = new_value
-                            cells_changed += 1
-                            log.append(
-                                f"{sheet.title}!{cell.coordinate}: 키워드 제거"
-                            )
-                    elif action is ExcelAction.CLEAR_CELL:
-                        cell.value = None
-                        cells_changed += 1
-                        log.append(f"{sheet.title}!{cell.coordinate}: 셀 비움")
-                    else:  # DELETE_ROW — 같은 행 중복 방지
-                        rows_to_delete.add(cell.row)
-
-            if action is ExcelAction.DELETE_ROW and rows_to_delete:
-                for row_idx in sorted(rows_to_delete, reverse=True):
-                    sheet.delete_rows(row_idx, 1)
-                    rows_deleted += 1
-                    log.append(f"{sheet.title}!행{row_idx}: 행 삭제")
+        if selected is not None:
+            cells_changed, rows_deleted = _apply_selected(workbook, action, criteria, selected, log)
+        else:
+            cells_changed, rows_deleted = _apply_all(workbook, action, criteria, log)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{path.stem}_edited{path.suffix}"
@@ -171,6 +150,96 @@ def apply_edit(path: Path, request: EditRequest, output_dir: Path) -> EditResult
         rows_deleted=rows_deleted,
         log=log,
     )
+
+
+def _apply_all(workbook, action, criteria, log: list[str]) -> tuple[int, int]:
+    """검색 조건에 매칭되는 모든 셀을 처리한다(기존 동작)."""
+    cells_changed = 0
+    rows_deleted = 0
+    for sheet in workbook.worksheets:
+        rows_to_delete: set[int] = set()
+        for row in sheet.iter_rows():
+            for cell in row:
+                text = _searchable_text(cell)
+                if text is None:
+                    continue
+                if not keyword_matcher.find_matches(text, criteria):
+                    continue
+
+                if action is ExcelAction.REMOVE_KEYWORD:
+                    new_value = keyword_matcher.remove_keywords(
+                        text, criteria.keywords, criteria.case_sensitive
+                    )
+                    if new_value != text:
+                        cell.value = new_value
+                        cells_changed += 1
+                        log.append(f"{sheet.title}!{cell.coordinate}: 키워드 제거")
+                elif action is ExcelAction.CLEAR_CELL:
+                    cell.value = None
+                    cells_changed += 1
+                    log.append(f"{sheet.title}!{cell.coordinate}: 셀 비움")
+                else:  # DELETE_ROW — 같은 행 중복 방지
+                    rows_to_delete.add(cell.row)
+
+        if action is ExcelAction.DELETE_ROW and rows_to_delete:
+            for row_idx in sorted(rows_to_delete, reverse=True):
+                sheet.delete_rows(row_idx, 1)
+                rows_deleted += 1
+                log.append(f"{sheet.title}!행{row_idx}: 행 삭제")
+    return cells_changed, rows_deleted
+
+
+def _apply_selected(
+    workbook, action, criteria, selected: list[ExcelMatch], log: list[str]
+) -> tuple[int, int]:
+    """선택된 항목(시트·셀·키워드)만 처리한다.
+
+    - REMOVE_KEYWORD: 같은 셀에서 선택된 키워드만 제거.
+    - CLEAR_CELL: 선택된 셀만 비움.
+    - DELETE_ROW: 선택된 항목이 속한 행만 중복 없이 내림차순 삭제.
+    """
+    cells_changed = 0
+    rows_deleted = 0
+
+    if action is ExcelAction.REMOVE_KEYWORD:
+        by_cell: dict[tuple[str, str], set[str]] = {}
+        for m in selected:
+            by_cell.setdefault((m.sheet_name, m.cell), set()).add(m.keyword)
+        for (sheet_name, coord), keywords in by_cell.items():
+            cell = workbook[sheet_name][coord]
+            if not isinstance(cell.value, str):
+                continue
+            new_value = keyword_matcher.remove_keywords(
+                cell.value, list(keywords), criteria.case_sensitive
+            )
+            if new_value != cell.value:
+                cell.value = new_value
+                cells_changed += 1
+                log.append(f"{sheet_name}!{coord}: 선택 키워드 제거")
+
+    elif action is ExcelAction.CLEAR_CELL:
+        seen: set[tuple[str, str]] = set()
+        for m in selected:
+            key = (m.sheet_name, m.cell)
+            if key in seen:
+                continue
+            seen.add(key)
+            workbook[m.sheet_name][m.cell].value = None
+            cells_changed += 1
+            log.append(f"{m.sheet_name}!{m.cell}: 셀 비움")
+
+    else:  # DELETE_ROW
+        rows_by_sheet: dict[str, set[int]] = {}
+        for m in selected:
+            rows_by_sheet.setdefault(m.sheet_name, set()).add(m.row)
+        for sheet_name, rows in rows_by_sheet.items():
+            sheet = workbook[sheet_name]
+            for row_idx in sorted(rows, reverse=True):
+                sheet.delete_rows(row_idx, 1)
+                rows_deleted += 1
+                log.append(f"{sheet_name}!행{row_idx}: 행 삭제")
+
+    return cells_changed, rows_deleted
 
 
 def verify(output_path: Path, criteria: SearchCriteria) -> VerificationResult:

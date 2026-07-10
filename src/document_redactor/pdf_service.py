@@ -113,21 +113,42 @@ def search(path: Path, criteria: SearchCriteria) -> SearchReport:
     )
 
 
-def apply_edit(path: Path, request: EditRequest, output_dir: Path) -> EditResult:
+def apply_edit(
+    path: Path,
+    request: EditRequest,
+    output_dir: Path,
+    selected: list[PdfMatch] | None = None,
+) -> EditResult:
     """승인된 redaction을 실행해 ``_redacted`` 접미사가 붙은 새 파일을 생성한다.
 
     페이지별로 모든 삭제 영역을 등록한 뒤 apply_redactions()로 실제 콘텐츠를 제거한다.
     원본을 덮어쓰지 않는다.
+
+    selected가 주어지면 **선택된 (페이지, 키워드) 조합만** redaction한다(해당 페이지의
+    그 키워드 발생 전부). None이면 모든 페이지의 모든 키워드를 redaction한다.
     """
     _resolve_pdf(path)
     criteria = request.criteria
     redactions_applied = 0
     log: list[str] = []
 
+    # 선택 모드: 페이지(1-기반) -> 그 페이지에서 redaction할 키워드 집합
+    selected_by_page: dict[int, set[str]] | None = None
+    if selected is not None:
+        selected_by_page = {}
+        for m in selected:
+            selected_by_page.setdefault(m.page, set()).add(m.keyword)
+
     with fitz.open(path) as doc:
         for page_index, page in enumerate(doc):
+            page_number = page_index + 1
+            if selected_by_page is not None:
+                keywords = selected_by_page.get(page_number, set())
+            else:
+                keywords = criteria.keywords
+
             page_redactions = 0
-            for keyword in criteria.keywords:
+            for keyword in keywords:
                 rects = _page_search(page, keyword)
                 for rect in rects:
                     page.add_redact_annot(rect)
