@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 프로젝트 산출물 (수정본/로그는 커밋하지 않는다)
+output/*
+!output/.gitkeep
+
+# 사용자 샘플 (테스트는 런타임에 생성하므로 바이너리 샘플은 커밋하지 않는다)
+samples/*
+!samples/.gitkeep
+
+# OMC 오케스트레이션 상태
+.omc/
+
+# OS / 에디터
+.DS_Store
+.idea/
+.vscode/

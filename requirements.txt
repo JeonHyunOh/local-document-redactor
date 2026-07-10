@@ -1,0 +1,4 @@
+streamlit>=1.33
+openpyxl>=3.1
+PyMuPDF>=1.24
+pydantic>=2.6
