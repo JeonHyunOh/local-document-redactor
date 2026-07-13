@@ -234,3 +234,57 @@ def test_batch_edit_name_collision_gets_suffix(tmp_path: Path):
 
     names = {p.name for p in out.glob("*.xlsx")}
     assert names == {"보고서.xlsx", "보고서_1.xlsx"}
+
+
+# --------------------------------------------------------------------------- #
+# 파일명·폴더명 키워드 정리 — batch_edit_in_place(제자리 rename)
+# --------------------------------------------------------------------------- #
+def test_batch_edit_in_place_renames_name_only_file(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_보고서.xlsx", "공개 자료")  # 내용 깨끗, 파일명만 매치
+    backup = tmp_path / "src_backup"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    # 파일이 정리된 이름으로 rename됨, 원래 이름은 사라짐
+    assert (root / "보고서.xlsx").exists()
+    assert not (root / "포스코_보고서.xlsx").exists()
+    # 내용은 무수정
+    assert load_workbook(root / "보고서.xlsx").active["A1"].value == "공개 자료"
+    # rename 전 백업 생성
+    assert (backup / "포스코_보고서.xlsx").exists()
+    # rename 로그 기록
+    log = (backup / "_rename_log.txt").read_text(encoding="utf-8")
+    assert "포스코_보고서.xlsx" in log and "보고서.xlsx" in log
+    assert items[0].renamed_to == "보고서.xlsx"
+
+
+def test_batch_edit_in_place_renames_folder_bottom_up_not_root(tmp_path: Path):
+    root = tmp_path / "포스코_루트"          # 루트 이름에도 키워드 → 변경되면 안 됨
+    _xlsx(root / "포스코_하위" / "a.xlsx", "대외비 문서")
+    backup = tmp_path / "포스코_루트_backup"
+
+    req = EditRequest(criteria=_criteria("대외비", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    # 하위 폴더는 rename, 루트는 그대로
+    assert root.exists()                      # 루트 미변경
+    assert (root / "하위").is_dir()            # 하위 폴더 '포스코' 제거
+    assert not (root / "포스코_하위").exists()
+    assert (root / "하위" / "a.xlsx").exists()  # 파일도 함께 이동
+
+
+def test_batch_edit_in_place_content_and_name_match(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_a.xlsx", "대외비 문서")  # 내용+이름 둘 다 매치
+    backup = tmp_path / "src_backup"
+
+    req = EditRequest(criteria=_criteria("대외비", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    # 내용 편집 + 파일명 정리 모두 적용
+    assert (root / "a.xlsx").exists()
+    assert load_workbook(root / "a.xlsx").active["A1"].value is None
+    # 백업엔 원본 이름·원본 내용 보존
+    assert load_workbook(backup / "포스코_a.xlsx").active["A1"].value == "대외비 문서"
