@@ -162,6 +162,7 @@ class BatchEditItem(BaseModel):
     edit: EditResult | None = None
     verification: VerificationResult | None = None
     error: str | None = None
+    renamed_to: str | None = None  # 이름 정리로 바뀐 최종 경로/파일명(변경 없으면 None)
 
     @property
     def clean(self) -> bool | None:
