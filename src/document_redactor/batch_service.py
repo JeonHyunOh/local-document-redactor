@@ -12,7 +12,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from . import file_service
+from . import file_service, name_redactor
 from .models import (
     BatchEditItem,
     BatchSearchItem,
@@ -120,6 +120,12 @@ def match_details(items: list[BatchSearchItem]) -> list[dict[str, str | int]]:
     return rows
 
 
+def _redact_rel_parent(rel_parent: Path, keywords: list[str], cs: bool) -> Path:
+    """상대 부모 경로의 각 세그먼트에서 키워드를 제거한 새 상대 경로를 반환한다."""
+    parts = [name_redactor.redact_segment(seg, keywords, cs) for seg in rel_parent.parts]
+    return Path(*parts) if parts else Path(".")
+
+
 def batch_edit(
     root: Path,
     request: EditRequest,
@@ -128,39 +134,75 @@ def batch_edit(
     only_with_matches: bool = True,
     on_progress: ProgressCallback | None = None,
 ) -> list[BatchEditItem]:
-    """폴더 내 파일을 일괄 편집해 output_root에 원본 폴더 구조로 저장한다.
+    """폴더 내 파일을 일괄 편집해 output_root에 저장한다(폴더·파일명 키워드 정리 포함).
 
-    only_with_matches=True면 키워드가 발견된 파일만 편집한다(불필요한 사본 생성 방지).
-    각 파일은 편집 후 재검증하며, 실패 파일은 error만 남기고 산출물을 만들지 않는다.
+    처리 대상은 '내용 매치 OR 이름 매치'로 판정한다(only_with_matches=True 기준).
+    - 내용 매치: 편집 후 정리된 이름으로 저장.
+    - 이름만 매치(내용 깨끗): 원본을 정리된 이름으로 복사(내용 무수정).
+    출력 경로의 폴더 세그먼트·파일명에서 키워드를 제거하며, 같은 폴더 내 이름 충돌은
+    접미사(_1, _2 …)로 회피한다. 각 편집 파일은 재검증하며, 실패 파일은 error만 남긴다.
     on_progress가 주어지면 파일 하나를 처리할 때마다 (완료, 전체, 상대경로)로 호출한다.
     """
+    keywords = request.criteria.keywords
+    cs = request.criteria.case_sensitive
     files = scan_folder(root, recursive)
     total = len(files)
     items: list[BatchEditItem] = []
-    for index, path in enumerate(files, start=1):
-        relative = path.relative_to(root).as_posix()
-        rel_parent = path.relative_to(root).parent
-        try:
-            if only_with_matches:
-                report = file_service.search(path, request.criteria)
-                if report.total_matches == 0:
-                    items.append(
-                        BatchEditItem(path=str(path), relative_path=relative)
-                    )  # 변경 없음 (output_path=None)
-                    continue
+    taken_by_dir: dict[Path, set[str]] = {}
 
-            out_dir = output_root / rel_parent
-            edit = file_service.apply_edit(path, request, out_dir)
-            verification = file_service.verify(Path(edit.output_path), request.criteria)
-            items.append(
-                BatchEditItem(
-                    path=str(path),
-                    relative_path=relative,
-                    output_path=edit.output_path,
-                    edit=edit,
-                    verification=verification,
-                )
+    for index, path in enumerate(files, start=1):
+        rel = path.relative_to(root)
+        relative = rel.as_posix()
+        try:
+            report = file_service.search(path, request.criteria)
+            content_match = report.total_matches > 0
+            name_match = name_redactor.name_contains_keyword(path.name, keywords, cs) or any(
+                name_redactor.name_contains_keyword(seg, keywords, cs) for seg in rel.parent.parts
             )
+            if only_with_matches and not content_match and not name_match:
+                items.append(BatchEditItem(path=str(path), relative_path=relative))
+                continue
+
+            out_parent = output_root / _redact_rel_parent(rel.parent, keywords, cs)
+            out_parent.mkdir(parents=True, exist_ok=True)
+            taken = taken_by_dir.setdefault(out_parent, set())
+
+            if content_match:
+                edit = file_service.apply_edit(path, request, out_parent)
+                verification = file_service.verify(Path(edit.output_path), request.criteria)
+                produced = Path(edit.output_path)
+                final_name = name_redactor.unique_name(
+                    name_redactor.redact_filename(produced.name, keywords, cs), taken
+                )
+                taken.add(final_name)
+                final_path = out_parent / final_name
+                if final_path != produced:
+                    produced.rename(final_path)
+                items.append(
+                    BatchEditItem(
+                        path=str(path),
+                        relative_path=relative,
+                        output_path=str(final_path),
+                        edit=edit,
+                        verification=verification,
+                        renamed_to=final_path.relative_to(output_root).as_posix(),
+                    )
+                )
+            else:  # 이름만 매치 → 내용 무수정 복사
+                final_name = name_redactor.unique_name(
+                    name_redactor.redact_filename(path.name, keywords, cs), taken
+                )
+                taken.add(final_name)
+                final_path = out_parent / final_name
+                shutil.copy2(path, final_path)
+                items.append(
+                    BatchEditItem(
+                        path=str(path),
+                        relative_path=relative,
+                        output_path=str(final_path),
+                        renamed_to=final_path.relative_to(output_root).as_posix(),
+                    )
+                )
         except Exception as exc:  # noqa: BLE001 - 사유 기록 후 다음 파일 계속
             items.append(
                 BatchEditItem(path=str(path), relative_path=relative, error=str(exc))

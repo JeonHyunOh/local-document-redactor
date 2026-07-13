@@ -8,6 +8,7 @@ import fitz
 from openpyxl import Workbook, load_workbook
 
 from document_redactor import batch_service, file_service
+from document_redactor import name_redactor  # noqa: F401  (이름 정리 시나리오에서 사용)
 from document_redactor.models import (
     EditRequest,
     ExcelAction,
@@ -171,3 +172,65 @@ def test_batch_edit_in_place_keeps_original_when_verify_fails(tmp_path: Path, mo
     assert not backup.exists()
     # 결과에 실패 사유 기록
     assert items[0].error and "재검증 실패" in items[0].error
+
+
+# --------------------------------------------------------------------------- #
+# 파일명·폴더명 키워드 정리 — batch_edit(출력본)
+# --------------------------------------------------------------------------- #
+def test_batch_edit_redacts_output_names(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_a.xlsx", "대외비 문서")                 # 내용+이름 매치
+    _xlsx(root / "포스코_폴더" / "b.xlsx", "대외비 메모")        # 폴더명 매치 + 내용 매치
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("대외비", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit(root, req, out, recursive=True)
+
+    # 최상위 파일명에서 '포스코' 제거 (편집본 접미사는 유지)
+    assert (out / "a_edited.xlsx").exists()
+    # 폴더명에서 '포스코' 제거되어 정리된 폴더에 저장
+    assert (out / "폴더" / "b_edited.xlsx").exists()
+    # 원본은 그대로
+    assert (root / "포스코_a.xlsx").exists()
+
+
+def test_batch_edit_copies_name_only_match(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_보고서.xlsx", "공개 자료")  # 내용 깨끗, 파일명만 매치
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit(root, req, out, recursive=True)
+    item = items[0]
+
+    # 정리된 이름으로 복사됨(내용 무수정)
+    copied = out / "보고서.xlsx"
+    assert copied.exists()
+    assert load_workbook(copied).active["A1"].value == "공개 자료"
+    assert item.renamed_to == "보고서.xlsx"
+
+
+def test_batch_edit_skips_when_content_and_name_clean(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "일반.xlsx", "공개 자료")
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit(root, req, out, recursive=True)
+
+    assert items[0].output_path is None
+    assert not out.exists() or not any(out.rglob("*.xlsx"))
+
+
+def test_batch_edit_name_collision_gets_suffix(tmp_path: Path):
+    root = tmp_path / "src"
+    # 서로 다른 두 파일이 정리 후 같은 이름('보고서.xlsx')이 됨 — 둘 다 이름만 매치(내용 깨끗)
+    _xlsx(root / "포스코_보고서.xlsx", "공개 자료")
+    _xlsx(root / "보고서_포스코.xlsx", "공개 자료")
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit(root, req, out, recursive=True)
+
+    names = {p.name for p in out.glob("*.xlsx")}
+    assert names == {"보고서.xlsx", "보고서_1.xlsx"}
