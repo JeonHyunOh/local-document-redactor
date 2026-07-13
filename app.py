@@ -18,7 +18,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from document_redactor import batch_service, excel_service, file_service
+from document_redactor import batch_service, excel_service, file_service, name_redactor
 from document_redactor.file_service import UnsupportedFileError
 from document_redactor.keyword_matcher import normalize_keywords
 from document_redactor.models import (
@@ -133,7 +133,19 @@ def render_single_file() -> None:
     c2.metric("파일 유형", report.file_type.value.upper())
 
     if report.total_matches == 0:
-        st.info("발견된 키워드가 없습니다.")
+        up_name = uploaded.name if uploaded else Path(st.session_state.s_saved).name
+        if name_redactor.name_contains_keyword(up_name, keywords, case_sensitive):
+            clean_name = name_redactor.redact_filename(up_name, keywords, case_sensitive)
+            st.info("내용에는 키워드가 없지만 **파일명**에 키워드가 있어 파일명만 정리했습니다.")
+            st.caption(f"`{up_name}` → `{clean_name}`")
+            st.download_button(
+                "📥 파일명 정리본 다운로드 (내용 무수정)",
+                data=Path(st.session_state.s_saved).read_bytes(),
+                file_name=clean_name,
+                use_container_width=True,
+            )
+        else:
+            st.info("발견된 키워드가 없습니다.")
         return
 
     # 삭제 방식 (Excel만)
@@ -192,9 +204,17 @@ def render_single_file() -> None:
         st.info(f"선택한 항목을 처리했습니다. 결과 파일에 남은 키워드 발견: {remaining}건 — 선택하지 않은 항목입니다.")
 
     output_path = Path(edit_result.output_path)
+    # 다운로드 파일명도 정리한다: 편집본 접미사(_edited/_redacted)는 유지하고
+    # 그 앞의 stem에서만 키워드를 제거한다.
+    suffix_tag = "_redacted" if report.file_type is FileType.PDF else "_edited"
+    src_name = Path(st.session_state.s_saved).name
+    dl_stem = Path(name_redactor.redact_filename(src_name, keywords, case_sensitive)).stem
+    dl_final = f"{dl_stem}{suffix_tag}{output_path.suffix}"
+    if dl_final != output_path.name:
+        st.caption(f"파일명 정리: `{output_path.name}` → `{dl_final}`")
     d1, d2 = st.columns(2)
-    d1.download_button("📥 수정본 다운로드", data=output_path.read_bytes(), file_name=output_path.name, use_container_width=True)
-    d2.download_button("📄 작업 로그 다운로드", data="\n".join(edit_result.log) or "(변경 없음)", file_name=f"{output_path.stem}_log.txt", use_container_width=True)
+    d1.download_button("📥 수정본 다운로드", data=output_path.read_bytes(), file_name=dl_final, use_container_width=True)
+    d2.download_button("📄 작업 로그 다운로드", data="\n".join(edit_result.log) or "(변경 없음)", file_name=f"{dl_stem}{suffix_tag}_log.txt", use_container_width=True)
 
 
 # =========================================================================== #
@@ -330,14 +350,20 @@ def render_folder() -> None:
     r2.metric("재검증 실패/유지", len(not_clean) + len(failed))
     r3.metric("매치 없음", len(edits) - len(edited) - len(failed))
 
+    renamed = [e for e in edits if e.renamed_to]
     st.dataframe(
         [{"파일": e.relative_path,
+          "변경된 이름": e.renamed_to or "",
           "결과": ("⚠️ " + e.error if e.error
                   else "미생성(매치 없음)" if not e.output_path
                   else ("✅ 교체 완료" if in_place_done else "✅ 검증 통과") if e.clean
                   else "⚠️ 키워드 잔존")} for e in edits],
         use_container_width=True,
     )
+    if renamed:
+        st.caption(f"이름이 정리된 항목: {len(renamed)}개")
+    if in_place_done and renamed:
+        st.info(f"이름 변경 기록: `{Path(st.session_state.b_backup) / '_rename_log.txt'}`")
 
     if not_clean:
         st.error(f"{len(not_clean)}개 파일에서 키워드가 남아 있습니다. 해당 파일을 개별 확인하세요.")
