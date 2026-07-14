@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -262,16 +263,19 @@ def batch_edit_in_place(
     by_path: dict[str, BatchEditItem] = {}
 
     # --- Phase 0: 형식 제거(opt-in, 완전 삭제·백업 없음) ---
-    removed_log: list[str] = []
+    # 로그에는 확장자별 삭제 개수만 남기고 파일명은 기록하지 않는다(삭제 대상 파일명 자체가
+    # 민감정보일 수 있으므로).
+    removed_counts: Counter[str] = Counter()
     if remove_suffixes:
         targets = {s.lower() for s in remove_suffixes}
         for path in scan_all_files(root, recursive):
-            if path.suffix.lower() not in targets:
+            suffix = path.suffix.lower()
+            if suffix not in targets:
                 continue
             rel = path.relative_to(root).as_posix()
             try:
                 path.unlink()
-                removed_log.append(rel)
+                removed_counts[suffix] += 1
                 items.append(
                     BatchEditItem(
                         path=str(path),
@@ -281,11 +285,10 @@ def batch_edit_in_place(
                 )
             except Exception as exc:  # noqa: BLE001 - 사유 기록 후 계속
                 items.append(BatchEditItem(path=str(path), relative_path=rel, error=str(exc)))
-    if removed_log:
+    if removed_counts:
         backup_root.mkdir(parents=True, exist_ok=True)
-        (backup_root / "_removed_log.txt").write_text(
-            "\n".join(removed_log) + "\n", encoding="utf-8"
-        )
+        lines = [f"{ext} {count}개 삭제" for ext, count in sorted(removed_counts.items())]
+        (backup_root / "_removed_log.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # --- Phase 1: 내용 편집(기존 동작) ---
     for index, path in enumerate(files, start=1):

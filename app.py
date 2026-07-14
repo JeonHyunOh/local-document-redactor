@@ -478,7 +478,7 @@ def render_folder() -> None:
             st.success(f"{len(edited)}개 파일을 제자리에서 교체했습니다.")
         removed = [e for e in edits if e.note and "완전 삭제" in e.note]
         if removed:
-            st.info(f"완전 삭제된 파일: {len(removed)}개 (복구 불가) — 목록: `{Path(st.session_state.b_backup) / '_removed_log.txt'}`")
+            st.info(f"완전 삭제된 파일: {len(removed)}개 (복구 불가) — 확장자별 개수: `{Path(st.session_state.b_backup) / '_removed_log.txt'}` (파일명은 기록하지 않음)")
         st.info(f"원본 백업 위치: `{st.session_state.b_backup}`")
     elif edited:
         out_root = Path(st.session_state.b_out)

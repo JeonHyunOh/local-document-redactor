@@ -363,9 +363,10 @@ def test_in_place_removes_target_suffixes_hard_delete(tmp_path: Path):
     assert not (root / "이미지.png").exists()
     assert not (root / "모델.nwd").exists()
     assert not (backup / "도면.dwg").exists()
-    # 삭제 로그 기록
+    # 삭제 로그는 확장자별 개수만 기록하고 파일명은 남기지 않는다
     log = (backup / "_removed_log.txt").read_text(encoding="utf-8")
-    assert "도면.dwg" in log and "모델.nwd" in log
+    assert "도면" not in log and "이미지" not in log and "모델" not in log  # 파일명 미기록
+    assert ".dwg 1개" in log and ".png 1개" in log and ".nwd 1개" in log     # 확장자별 개수
     # 결과에 note
     assert any(i.note and "완전 삭제" in i.note for i in items)
     # 지원 파일은 정상 편집
