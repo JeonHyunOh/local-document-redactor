@@ -98,3 +98,22 @@ def apply_edit(path: Path, request: EditRequest, output_dir: Path, selected=None
 def verify(output_path: Path, criteria: SearchCriteria) -> VerificationResult:
     """파일 유형에 맞는 서비스로 재검증을 위임한다."""
     return _service_for(output_path).verify(output_path, criteria)
+
+
+def remaining_rows(report: SearchReport | None) -> list[dict[str, str]]:
+    """SearchReport의 모든 매치를 {항목, 위치, 문맥} 행으로 평탄화한다(UI 잔존 표시용).
+
+    항목은 키워드 또는 패턴 유형(예: ``[전화번호]``)이다. report가 None이면 빈 목록.
+    """
+    if report is None:
+        return []
+    rows: list[dict[str, str]] = []
+    for m in report.excel_matches:
+        rows.append({"항목": m.keyword, "위치": f"{m.sheet_name}!{m.cell}", "문맥": m.original_value})
+    for m in report.pdf_matches:
+        rows.append({"항목": m.keyword, "위치": f"{m.page}페이지", "문맥": m.context or f"{m.count}건"})
+    for m in report.email_matches:
+        rows.append({"항목": m.keyword, "위치": f"{m.field} {m.line}줄", "문맥": m.context})
+    for m in report.pptx_matches:
+        rows.append({"항목": m.keyword, "위치": f"슬라이드{m.slide} {m.location}", "문맥": m.context})
+    return rows

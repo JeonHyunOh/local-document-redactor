@@ -70,3 +70,23 @@ def test_service_for_routes_email_and_md():
 def test_detect_and_route_pptx():
     assert file_service.detect_file_type("a.pptx") is FileType.PPTX
     assert file_service._service_for(Path("a.pptx")) is pptx_service
+
+
+def test_remaining_rows_flattens_all_match_types():
+    from document_redactor.models import (
+        EmailMatch, ExcelMatch, PdfMatch, PptxMatch, SearchReport,
+    )
+    report = SearchReport(
+        file_name="x", file_type=FileType.XLSX, criteria=SearchCriteria(keywords=["k"]),
+        excel_matches=[ExcelMatch(file_name="x", sheet_name="Sheet1", cell="B3", row=3, keyword="대외비", original_value="대외비 문서")],
+        pdf_matches=[PdfMatch(file_name="x", page=2, keyword="[전화번호]", count=1, context="010-1")],
+        email_matches=[EmailMatch(file_name="x", field="본문", line=5, keyword="a@b.com", count=1, context="메일 a@b.com")],
+        pptx_matches=[PptxMatch(file_name="x", slide=1, location="표", keyword="포스코", count=1, context="포스코 셀")],
+    )
+    rows = file_service.remaining_rows(report)
+    items = {r["항목"] for r in rows}
+    locs = {r["위치"] for r in rows}
+    assert items == {"대외비", "[전화번호]", "a@b.com", "포스코"}
+    assert "Sheet1!B3" in locs and "2페이지" in locs
+    assert any("본문" in loc and "5" in loc for loc in locs)
+    assert any("슬라이드1" in loc for loc in locs)

@@ -104,6 +104,14 @@ tab_single, tab_folder = st.tabs(["📄 단일 파일", "📁 폴더 (여러 파
 # =========================================================================== #
 # 공통 헬퍼
 # =========================================================================== #
+def _show_remaining(verification) -> None:
+    """재검증에서 남은 키워드·패턴을 항목·위치·문맥 표로 펼쳐 보여준다."""
+    rows = file_service.remaining_rows(verification.remaining if verification else None)
+    if rows:
+        with st.expander(f"🔎 잔존 항목 상세 ({len(rows)}건) — 무엇이 어디에 남았는지", expanded=True):
+            st.dataframe(rows, use_container_width=True)
+
+
 def _zip_folder(folder: Path) -> bytes:
     """출력 폴더 전체를 zip 바이트로 만든다(구조 유지)."""
     buffer = io.BytesIO()
@@ -197,6 +205,7 @@ def render_single_file() -> None:
         else:
             remaining = verification.remaining.total_matches if verification.remaining else 0
             st.error(f"재검증 실패: .md에 키워드가 {remaining}건 남아 있습니다.")
+            _show_remaining(verification)
 
         src_stem = Path(name_redactor.redact_filename(Path(st.session_state.s_saved).name, keywords, case_sensitive)).stem
         dl_name = f"{src_stem}_redacted.md"
@@ -240,6 +249,7 @@ def render_single_file() -> None:
         else:
             remaining = verification.remaining.total_matches if verification.remaining else 0
             st.error(f"재검증 실패: 키워드가 {remaining}건 남아 있습니다.")
+            _show_remaining(verification)
 
         src_stem = Path(name_redactor.redact_filename(Path(st.session_state.s_saved).name, keywords, case_sensitive)).stem
         st.download_button(
@@ -302,8 +312,10 @@ def render_single_file() -> None:
         st.success("재검증 완료: 결과 파일에서 선택한 키워드가 확인되지 않습니다.")
     elif all_selected:
         st.error(f"재검증 실패: 키워드가 {remaining}건 남아 있습니다. 결과 파일을 확인하세요.")
+        _show_remaining(verification)
     else:
         st.info(f"선택한 항목을 처리했습니다. 결과 파일에 남은 키워드 발견: {remaining}건 — 선택하지 않은 항목입니다.")
+        _show_remaining(verification)
 
     output_path = Path(edit_result.output_path)
     # 다운로드 파일명도 정리한다: 편집본 접미사(_edited/_redacted)는 유지하고
@@ -482,6 +494,16 @@ def render_folder() -> None:
                   else "⚠️ 키워드 잔존")} for e in visible],
         use_container_width=True,
     )
+    remaining_detail = [
+        {"파일": e.relative_path, **row}
+        for e in visible
+        if e.verification and e.verification.remaining
+        for row in file_service.remaining_rows(e.verification.remaining)
+    ]
+    if remaining_detail:
+        with st.expander(f"🔎 파일별 잔존 항목 상세 ({len(remaining_detail)}건) — 무엇이 어디에 남았는지", expanded=True):
+            st.dataframe(remaining_detail, use_container_width=True)
+
     if renamed:
         st.caption(f"이름이 정리된 항목: {len(renamed)}개")
     if in_place_done and renamed:
