@@ -30,6 +30,10 @@ class FileType(str, Enum):
     MSG = "msg"
     EML = "eml"
     PPTX = "pptx"
+    DOCX = "docx"
+    DOC = "doc"
+    HWP = "hwp"
+    HWPX = "hwpx"
     MD = "md"  # 이메일을 정리해 렌더한 Markdown 산출물(입력 유형 아님)
 
 
