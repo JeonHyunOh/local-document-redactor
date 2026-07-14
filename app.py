@@ -45,6 +45,9 @@ _EXCEL_ACTION_LABEL = {
 }
 _LABEL_EXCEL_ACTION = {v: k for k, v in _EXCEL_ACTION_LABEL.items()}
 
+# 제자리 모드에서 opt-in으로 완전 삭제할 확장자(내용 정리 불가 형식)
+_REMOVAL_SUFFIXES = {".dwg", ".png", ".nwd"}
+
 
 # --------------------------------------------------------------------------- #
 # 사이드바: 키워드 · 검색 조건 (모드 공통)
@@ -106,8 +109,8 @@ def _zip_folder(folder: Path) -> bytes:
 # =========================================================================== #
 def render_single_file() -> None:
     uploaded = st.file_uploader(
-        "파일 업로드 (.xlsx / .xlsm / 텍스트 PDF / .msg / .eml)",
-        type=["xlsx", "xlsm", "pdf", "msg", "eml"],
+        "파일 업로드 (.xlsx / .xlsm / 텍스트 PDF / .msg / .eml / .pptx)",
+        type=["xlsx", "xlsm", "pdf", "msg", "eml", "pptx"],
     )
 
     if st.button("🔍 검사하기", disabled=not (uploaded and keywords), help="파일을 수정하지 않고 검사만 합니다."):
@@ -191,6 +194,48 @@ def render_single_file() -> None:
             "📥 정리된 .md 다운로드",
             data=Path(edit_result.output_path).read_bytes(),
             file_name=dl_name,
+            use_container_width=True,
+        )
+        return
+
+    # PowerPoint(.pptx): 삭제 방식 선택 없이 승인 → 수정본 산출
+    if report.file_type is FileType.PPTX:
+        st.info("PowerPoint 슬라이드·표·노트의 텍스트에서 키워드를 제거합니다. 원본은 수정되지 않습니다.")
+        st.dataframe(
+            [{"슬라이드": m.slide, "위치": m.location, "키워드": m.keyword, "개수": m.count, "문맥": m.context}
+             for m in report.pptx_matches],
+            use_container_width=True,
+        )
+        approved = st.checkbox("위 키워드 제거를 승인합니다.", key="s_approve_pptx")
+        if st.button("🗑️ 승인하고 수정본 생성", disabled=not approved, type="primary"):
+            try:
+                request = EditRequest(criteria=report.criteria)
+                edit_result = file_service.apply_edit(st.session_state.s_saved, request, OUTPUT_DIR)
+                st.session_state.s_edit = edit_result
+                st.session_state.s_verify = file_service.verify(Path(edit_result.output_path), report.criteria)
+                st.session_state.s_all_selected = True
+            except Exception as exc:
+                st.error("수정본 생성 중 오류가 발생했습니다. 결과 파일을 제공하지 않습니다.")
+                st.exception(exc)
+
+        edit_result = st.session_state.get("s_edit")
+        verification = st.session_state.get("s_verify")
+        if edit_result is None or verification is None:
+            return
+
+        st.subheader("처리 결과")
+        st.metric("제거된 키워드", edit_result.redactions_applied)
+        if verification.clean:
+            st.success("재검증 완료: 산출본에서 키워드가 확인되지 않습니다.")
+        else:
+            remaining = verification.remaining.total_matches if verification.remaining else 0
+            st.error(f"재검증 실패: 키워드가 {remaining}건 남아 있습니다.")
+
+        src_stem = Path(name_redactor.redact_filename(Path(st.session_state.s_saved).name, keywords, case_sensitive)).stem
+        st.download_button(
+            "📥 수정본 다운로드",
+            data=Path(edit_result.output_path).read_bytes(),
+            file_name=f"{src_stem}_edited.pptx",
             use_container_width=True,
         )
         return
@@ -351,6 +396,12 @@ def render_folder() -> None:
             "재검증을 통과한 파일만 교체되며, 실패한 파일의 원본은 그대로 유지됩니다. "
             "처음에는 폴더 사본으로 시험해 보시길 권합니다."
         )
+        st.checkbox(
+            "CAD·이미지·3D 파일(.dwg/.png/.nwd) 완전 삭제 (복구 불가)",
+            key="b_remove_targets",
+        )
+        if st.session_state.get("b_remove_targets"):
+            st.warning("⚠️ 체크한 확장자 파일은 **백업 없이 완전 삭제**됩니다. `_removed_log.txt`에만 목록이 남습니다.")
 
     approve_label = (
         f"위 {len(hit_files)}개 파일의 원본을 덮어쓰는 데 동의합니다(백업 생성됨)."
@@ -367,7 +418,12 @@ def render_folder() -> None:
 
         try:
             if in_place:
-                st.session_state.b_edit = batch_service.batch_edit_in_place(root, request, backup_root, recursive=st.session_state.b_recursive, on_progress=_on_edit)
+                st.session_state.b_edit = batch_service.batch_edit_in_place(
+                    root, request, backup_root,
+                    recursive=st.session_state.b_recursive,
+                    on_progress=_on_edit,
+                    remove_suffixes=_REMOVAL_SUFFIXES if st.session_state.get("b_remove_targets") else None,
+                )
                 st.session_state.b_out = None
                 st.session_state.b_backup = str(backup_root)
             else:
@@ -420,6 +476,9 @@ def render_folder() -> None:
     if in_place_done:
         if edited:
             st.success(f"{len(edited)}개 파일을 제자리에서 교체했습니다.")
+        removed = [e for e in edits if e.note and "완전 삭제" in e.note]
+        if removed:
+            st.info(f"완전 삭제된 파일: {len(removed)}개 (복구 불가) — 목록: `{Path(st.session_state.b_backup) / '_removed_log.txt'}`")
         st.info(f"원본 백업 위치: `{st.session_state.b_backup}`")
     elif edited:
         out_root = Path(st.session_state.b_out)
