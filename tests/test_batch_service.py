@@ -437,6 +437,47 @@ def test_in_place_renames_unsupported_extension_by_filename(tmp_path: Path):
     assert any(i.renamed_to == "메모.txt" for i in items)
 
 
+def _make_zip(path: Path, inner_name: str, data: bytes) -> None:
+    import zipfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(inner_name, data)
+
+
+def test_in_place_extracts_zip_and_deletes_original(tmp_path: Path):
+    import io
+
+    from openpyxl import Workbook, load_workbook
+
+    root = tmp_path / "src"
+    root.mkdir(parents=True)
+    buf = io.BytesIO()
+    wb = Workbook(); wb.active["A1"] = "대외비"; wb.save(buf)
+    _make_zip(root / "압축.zip", "포스코_내부.xlsx", buf.getvalue())
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("대외비", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    assert not (root / "압축.zip").exists()      # 원본 zip 삭제
+    assert (backup / "압축.zip").exists()          # 백업 보존
+    extracted = root / "압축" / "내부.xlsx"        # 파일명 '포스코' 정리됨
+    assert extracted.exists()
+    assert load_workbook(extracted).active["A1"].value is None  # 내용 편집됨
+
+
+def test_in_place_zip_slip_rejected(tmp_path: Path):
+    root = tmp_path / "src"
+    root.mkdir(parents=True)
+    _make_zip(root / "evil.zip", "../escape.txt", b"x")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("x"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    assert not (tmp_path / "escape.txt").exists()  # 상위로 탈출 안 됨
+    assert any(i.error for i in items if i.path.endswith("evil.zip"))
+
+
 def test_in_place_pptx_content_edited(tmp_path: Path, make_pptx):
     root = tmp_path / "src"
     make_pptx(root / "deck.pptx", title="포스코 제목", body_lines=["대외비 본문"])
