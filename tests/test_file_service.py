@@ -72,6 +72,15 @@ def test_detect_and_route_pptx():
     assert file_service._service_for(Path("a.pptx")) is pptx_service
 
 
+def test_detect_and_route_office_docs():
+    from document_redactor import office_service
+
+    assert file_service.detect_file_type("a.docx") is FileType.DOCX
+    assert file_service.detect_file_type("a.hwp") is FileType.HWP
+    for name in ("a.docx", "a.doc", "a.hwp", "a.hwpx"):
+        assert file_service._service_for(Path(name)) is office_service
+
+
 def test_remaining_rows_flattens_all_match_types():
     from document_redactor.models import (
         EmailMatch, ExcelMatch, PdfMatch, PptxMatch, SearchReport,
