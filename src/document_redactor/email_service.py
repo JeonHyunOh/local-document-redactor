@@ -7,7 +7,10 @@ EmailContent 위에서 동작해 이메일 파일 없이 단위 테스트할 수
 
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass, field
+from email import message_from_bytes
+from email.policy import default as _email_policy
 from pathlib import Path
 
 from . import keyword_matcher
@@ -91,3 +94,63 @@ def _find_matches(
                     )
                 )
     return out
+
+
+_TAG = _re.compile(r"<[^>]+>")
+
+
+def _strip_html(html: str) -> str:
+    """HTML 본문을 대략적인 평문으로 변환한다(태그 제거·공백 정리). 키워드 검색용."""
+    text = _TAG.sub(" ", html)
+    return _re.sub(r"[ \t]+", " ", text).strip()
+
+
+def _load_eml(path: Path) -> EmailContent:
+    """표준 email 모듈로 .eml을 파싱해 EmailContent로 정규화한다."""
+    msg = message_from_bytes(path.read_bytes(), policy=_email_policy)
+    body_part = msg.get_body(preferencelist=("plain",))
+    if body_part is not None:
+        body = body_part.get_content()
+    else:
+        html_part = msg.get_body(preferencelist=("html",))
+        body = _strip_html(html_part.get_content()) if html_part is not None else ""
+    attachments = [a.get_filename() or "" for a in msg.iter_attachments()]
+    return EmailContent(
+        subject=str(msg["subject"] or ""),
+        sender=str(msg["from"] or ""),
+        to=str(msg["to"] or ""),
+        cc=str(msg["cc"] or ""),
+        date=str(msg["date"] or ""),
+        body=str(body).strip("\n"),
+        attachments=[a for a in attachments if a],
+    )
+
+
+def _load_msg(path: Path) -> EmailContent:
+    """extract_msg로 .msg를 파싱해 EmailContent로 정규화한다."""
+    import extract_msg  # 무거운 의존성 — 함수 내 지연 import
+
+    msg = extract_msg.openMsg(str(path))
+    try:
+        attachments = [(att.getFilename() or "") for att in msg.attachments]
+        return EmailContent(
+            subject=str(msg.subject or ""),
+            sender=str(msg.sender or ""),
+            to=str(msg.to or ""),
+            cc=str(msg.cc or ""),
+            date=str(msg.date or ""),
+            body=str(msg.body or ""),
+            attachments=[a for a in attachments if a],
+        )
+    finally:
+        msg.close()
+
+
+def _load(path: Path) -> EmailContent:
+    """확장자로 어댑터를 선택한다(.eml → _load_eml, .msg → _load_msg)."""
+    suffix = path.suffix.lower()
+    if suffix == ".eml":
+        return _load_eml(path)
+    if suffix == ".msg":
+        return _load_msg(path)
+    raise ValueError(f"이메일 형식이 아닙니다: {suffix or '(확장자 없음)'}")

@@ -81,3 +81,30 @@ def test_find_matches_case_insensitive_default_and_sensitive():
     assert not email_service._find_matches(
         content, SearchCriteria(keywords=["posco"], case_sensitive=True), "a"
     )
+
+
+def test_load_eml_normalizes_all_fields(make_eml, tmp_path):
+    p = make_eml(
+        tmp_path / "m.eml",
+        subject="대외비 건",
+        body="포스코 본문",
+        sender="홍길동 <hong@example.com>",
+        to="김철수 <kim@example.com>",
+        cc="이영희 <lee@example.com>",
+        attachments=["포스코_첨부.xlsx"],
+    )
+    content = email_service._load(p)
+    assert content.subject == "대외비 건"
+    assert "홍길동" in content.sender
+    assert "김철수" in content.to
+    assert "이영희" in content.cc
+    assert "포스코 본문" in content.body
+    assert content.attachments == ["포스코_첨부.xlsx"]
+
+
+def test_load_msg_normalizes_core_fields(make_msg, tmp_path):
+    p = make_msg(tmp_path / "m.msg", subject="대외비 건", body="포스코 본문", sender="홍길동")
+    content = email_service._load(p)
+    assert content.subject == "대외비 건"
+    assert content.sender == "홍길동"
+    assert "포스코 본문" in content.body
