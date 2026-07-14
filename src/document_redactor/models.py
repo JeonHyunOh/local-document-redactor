@@ -56,6 +56,7 @@ class SearchCriteria(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     mode: SearchMode = SearchMode.CONTAINS
     case_sensitive: bool = False
+    redact_account_numbers: bool = False  # 계좌번호 패턴 제거 opt-in(오탐 위험)
 
     @field_validator("keywords")
     @classmethod
