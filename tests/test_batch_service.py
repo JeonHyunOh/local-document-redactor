@@ -488,3 +488,46 @@ def test_in_place_pptx_content_edited(tmp_path: Path, make_pptx):
     from document_redactor import pptx_service
     assert pptx_service.search(root / "deck.pptx", req.criteria).total_matches == 0
     assert (backup / "deck.pptx").exists()  # 원본 백업
+
+
+def _fake_office_pdf(tmp: Path, text: str):
+    import fitz
+    p = tmp / "conv_office.pdf"
+    doc = fitz.open(); pg = doc.new_page(); pg.insert_text((72, 72), text); doc.save(str(p)); doc.close()
+    return p
+
+
+def test_in_place_office_doc_converts_to_pdf_and_deletes_original(tmp_path: Path, monkeypatch):
+    from document_redactor import doc_converter
+    root = tmp_path / "src"
+    root.mkdir(parents=True)
+    (root / "포스코_보고서.docx").write_bytes(b"stub")
+    monkeypatch.setattr(doc_converter, "convert_to_pdf",
+                        lambda p: _fake_office_pdf(tmp_path, "SECRET 010-1234-5678"))
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("SECRET", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+    item = items[0]
+
+    assert not (root / "포스코_보고서.docx").exists()          # 원본 삭제
+    assert (root / "보고서_redacted.pdf").exists()             # 변환·정리 PDF(파일명도 정리)
+    assert (backup / "포스코_보고서.docx").exists()            # 원본 백업
+    assert item.renamed_to == "보고서_redacted.pdf"
+    # 산출 PDF 재검증 clean
+    import fitz
+    assert "SECRET" not in fitz.open(str(root / "보고서_redacted.pdf"))[0].get_text()
+
+
+def test_in_place_clean_office_doc_untouched(tmp_path: Path, monkeypatch):
+    from document_redactor import doc_converter
+    root = tmp_path / "src"
+    root.mkdir(parents=True)
+    (root / "공지.docx").write_bytes(b"stub")
+    monkeypatch.setattr(doc_converter, "convert_to_pdf",
+                        lambda p: _fake_office_pdf(tmp_path, "general notice"))
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    assert (root / "공지.docx").exists()  # 키워드·패턴 없음 → 유지
+    assert not any(p.suffix == ".pdf" for p in root.rglob("*"))

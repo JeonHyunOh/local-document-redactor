@@ -142,8 +142,10 @@ def apply_edit(
 ) -> EditResult:
     """승인된 redaction을 실행해 ``_redacted`` 접미사가 붙은 새 파일을 생성한다.
 
-    페이지별로 모든 삭제 영역을 등록한 뒤 apply_redactions()로 실제 콘텐츠를 제거한다.
-    원본을 덮어쓰지 않는다.
+    페이지별로 삭제 영역을 찾아 **하나씩 apply_redactions()로 제거**한다. 여러 redaction
+    주석을 한 번에 적용하면 일부 PDF(예: MS Word 변환본)에서 일부 텍스트가 남는 MuPDF
+    특성이 있어, 사전 수집한 좌표를 한 건씩 적용한다(삭제된 텍스트는 이동하지 않으므로
+    사전 좌표가 유효하다). 원본을 덮어쓰지 않는다.
 
     selected가 주어지면 **선택된 (페이지, 키워드) 조합만** redaction한다(해당 페이지의
     그 키워드 발생 전부). None이면 모든 페이지의 모든 키워드를 redaction한다.
@@ -168,13 +170,10 @@ def apply_edit(
             else:
                 keywords = criteria.keywords
 
-            page_redactions = 0
+            # 삭제할 좌표를 먼저 모은다(키워드 + 패턴). 패턴은 선택과 무관하게 항상 제거.
+            rects_to_redact: list = []
             for keyword in keywords:
-                rects = _page_search(page, keyword)
-                for rect in rects:
-                    page.add_redact_annot(rect)
-                    page_redactions += 1
-            # 패턴은 선택과 무관하게 항상 redaction한다(개인정보 자동 삭제).
+                rects_to_redact.extend(_page_search(page, keyword))
             pattern_values = {
                 value
                 for _, value in pattern_matcher.find_patterns(
@@ -182,11 +181,15 @@ def apply_edit(
                 )
             }
             for value in pattern_values:
-                for rect in _page_search(page, value):
-                    page.add_redact_annot(rect)
-                    page_redactions += 1
+                rects_to_redact.extend(_page_search(page, value))
+
+            # 한 건씩 적용한다(여러 주석 일괄 적용이 일부 PDF에서 남는 문제 회피).
+            page_redactions = 0
+            for rect in rects_to_redact:
+                page.add_redact_annot(rect)
+                page.apply_redactions()
+                page_redactions += 1
             if page_redactions:
-                page.apply_redactions()  # 페이지 등록 완료 후 일괄 적용
                 redactions_applied += page_redactions
                 log.append(f"p{page_index + 1}: {page_redactions}건 redaction 적용")
 

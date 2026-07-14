@@ -127,9 +127,11 @@ def _zip_folder(folder: Path) -> bytes:
 # =========================================================================== #
 def render_single_file() -> None:
     uploaded = st.file_uploader(
-        "파일 업로드 (.xlsx / .xlsm / 텍스트 PDF / .msg / .eml / .pptx)",
-        type=["xlsx", "xlsm", "pdf", "msg", "eml", "pptx"],
+        "파일 업로드 (.xlsx / .xlsm / PDF / .msg / .eml / .pptx / .docx / .doc / .hwp / .hwpx)",
+        type=["xlsx", "xlsm", "pdf", "msg", "eml", "pptx", "docx", "doc", "hwp", "hwpx"],
     )
+    st.caption("ℹ️ 문서(.docx/.doc/.hwp/.hwpx)는 Word·한글로 **PDF로 변환 후** 검사됩니다"
+               "(변환에 시간이 걸릴 수 있고, 결과는 PDF입니다).")
 
     if st.button("🔍 검사하기", disabled=not uploaded, help="파일을 수정하지 않고 검사만 합니다(키워드 없어도 개인정보 패턴은 검사됨)."):
         for key in ("s_report", "s_saved", "s_edit", "s_verify", "s_editor", "s_approve", "s_all_selected"):

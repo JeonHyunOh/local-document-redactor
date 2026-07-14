@@ -38,7 +38,7 @@ def test_save_upload_writes_safe_name(tmp_path: Path):
 
 def test_save_upload_rejects_unsupported(tmp_path: Path):
     with pytest.raises(UnsupportedFileError):
-        file_service.save_upload(b"x", "macro.docx", tmp_path)
+        file_service.save_upload(b"x", "old.hancom", tmp_path)
 
 
 def test_routing_dispatches_to_excel(tmp_path: Path):
@@ -70,6 +70,15 @@ def test_service_for_routes_email_and_md():
 def test_detect_and_route_pptx():
     assert file_service.detect_file_type("a.pptx") is FileType.PPTX
     assert file_service._service_for(Path("a.pptx")) is pptx_service
+
+
+def test_detect_and_route_office_docs():
+    from document_redactor import office_service
+
+    assert file_service.detect_file_type("a.docx") is FileType.DOCX
+    assert file_service.detect_file_type("a.hwp") is FileType.HWP
+    for name in ("a.docx", "a.doc", "a.hwp", "a.hwpx"):
+        assert file_service._service_for(Path(name)) is office_service
 
 
 def test_remaining_rows_flattens_all_match_types():
