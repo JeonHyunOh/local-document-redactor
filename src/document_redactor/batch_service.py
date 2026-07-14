@@ -23,7 +23,9 @@ from .models import (
 # 진행률 콜백: (완료 개수, 전체 개수, 현재 파일 상대경로) -> None
 ProgressCallback = Callable[[int, int, str], None]
 
-_SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf"}
+_SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf", ".msg", ".eml"}
+_EMAIL_SUFFIXES = {".msg", ".eml"}
+_INPLACE_EMAIL_NOTE = "제자리 모드는 이메일 내용을 지원하지 않습니다(별도 출력 폴더 모드를 사용하세요)."
 
 
 def scan_folder(root: Path, recursive: bool = True) -> list[Path]:
@@ -247,6 +249,14 @@ def batch_edit_in_place(
     for index, path in enumerate(files, start=1):
         relative = path.relative_to(root).as_posix()
         try:
+            if path.suffix.lower() in _EMAIL_SUFFIXES:
+                # 이메일은 제자리 교체(형식 변경) 불가 — 내용 미처리, 파일명 rename은 Phase 2에서.
+                item = BatchEditItem(
+                    path=str(path), relative_path=relative, note=_INPLACE_EMAIL_NOTE
+                )
+                items.append(item)
+                by_path[str(path)] = item
+                continue
             report = file_service.search(path, request.criteria)
             if report.total_matches == 0:
                 item = BatchEditItem(path=str(path), relative_path=relative)

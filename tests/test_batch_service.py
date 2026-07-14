@@ -7,7 +7,7 @@ from pathlib import Path
 import fitz
 from openpyxl import Workbook, load_workbook
 
-from document_redactor import batch_service, file_service
+from document_redactor import batch_service, email_service, file_service
 from document_redactor import name_redactor  # noqa: F401  (이름 정리 시나리오에서 사용)
 from document_redactor.models import (
     EditRequest,
@@ -288,3 +288,47 @@ def test_batch_edit_in_place_content_and_name_match(tmp_path: Path):
     assert load_workbook(root / "a.xlsx").active["A1"].value is None
     # 백업엔 원본 이름·원본 내용 보존
     assert load_workbook(backup / "포스코_a.xlsx").active["A1"].value == "대외비 문서"
+
+
+# --------------------------------------------------------------------------- #
+# 이메일(.msg/.eml) 배치 처리
+# --------------------------------------------------------------------------- #
+def test_scan_folder_includes_email(tmp_path: Path, make_eml):
+    _xlsx(tmp_path / "a.xlsx", "x")
+    make_eml(tmp_path / "b.eml", subject="s", body="x")
+    names = {p.name for p in batch_service.scan_folder(tmp_path, recursive=True)}
+    assert names == {"a.xlsx", "b.eml"}
+
+
+def test_batch_edit_email_produces_markdown(tmp_path: Path, make_eml):
+    root = tmp_path / "src"
+    make_eml(root / "메일.eml", subject="포스코 보고", body="대외비 내용")
+    out = tmp_path / "out"
+    req = EditRequest(criteria=_criteria("포스코", "대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit(root, req, out, recursive=True)
+
+    produced = out / "메일_redacted.md"
+    assert produced.exists()
+    text = produced.read_text(encoding="utf-8")
+    assert "포스코" not in text and "대외비" not in text
+    assert any(i.output_path for i in items)
+    # 원본 보존
+    assert (root / "메일.eml").exists()
+
+
+def test_batch_edit_in_place_skips_email_content_but_renames(tmp_path: Path, make_eml):
+    root = tmp_path / "src"
+    make_eml(root / "포스코_메일.eml", subject="포스코", body="대외비")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코", "대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+    item = items[0]
+
+    # 내용은 처리하지 않음 → 원본 .eml 그대로(본문에 대외비 남아 있음)
+    renamed = root / "메일.eml"
+    assert renamed.exists() and not (root / "포스코_메일.eml").exists()  # 파일명만 rename
+    # 원본 내용 미수정 확인은 파싱해서(전송 인코딩 무관) — subject의 '포스코', body의 '대외비' 잔존
+    reloaded = email_service._load(renamed)
+    assert "포스코" in reloaded.subject and "대외비" in reloaded.body
+    assert item.note is not None and "제자리" in item.note
+    assert item.renamed_to == "메일.eml"
