@@ -195,3 +195,28 @@ def test_selected_delete_row_only_selected(sample_xlsx: Path, tmp_path: Path):
     assert wb["Sheet2"]["A1"].value is None                 # 선택 행 삭제
     assert wb["Sheet1"]["A1"].value == "대외비 문서"          # 미선택 시트 유지
     assert result.rows_deleted == 1
+
+
+# --- 패턴 자동 삭제 통합 ---
+def test_excel_search_detects_pattern_without_keyword(tmp_path: Path):
+    p = tmp_path / "a.xlsx"
+    wb = Workbook(); wb.active["A1"] = "연락 010-1234-5678"; wb.save(p)
+    report = excel_service.search(p, SearchCriteria(keywords=[]))  # 키워드 없음
+    assert report.total_matches >= 1
+    assert any("전화번호" in m.keyword for m in report.excel_matches)
+
+
+def test_excel_edit_removes_pattern(tmp_path: Path):
+    p = tmp_path / "a.xlsx"
+    wb = Workbook(); wb.active["A1"] = "메일 a@b.com"; wb.save(p)
+    req = EditRequest(criteria=SearchCriteria(keywords=[]), excel_action=ExcelAction.REMOVE_KEYWORD)
+    res = excel_service.apply_edit(p, req, tmp_path / "out")
+    assert excel_service.verify(Path(res.output_path), req.criteria).clean
+
+
+def test_excel_account_opt_in(tmp_path: Path):
+    p = tmp_path / "a.xlsx"
+    wb = Workbook(); wb.active["A1"] = "계좌 123-45-678901"; wb.save(p)
+    assert excel_service.search(p, SearchCriteria(keywords=[])).total_matches == 0
+    on = SearchCriteria(keywords=[], redact_account_numbers=True)
+    assert excel_service.search(p, on).total_matches >= 1
