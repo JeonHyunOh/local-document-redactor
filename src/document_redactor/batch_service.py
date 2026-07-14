@@ -26,7 +26,6 @@ ProgressCallback = Callable[[int, int, str], None]
 
 _SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf", ".msg", ".eml", ".pptx"}
 _EMAIL_SUFFIXES = {".msg", ".eml"}
-_INPLACE_EMAIL_NOTE = "제자리 모드는 이메일 내용을 지원하지 않습니다(별도 출력 폴더 모드를 사용하세요)."
 
 
 def scan_folder(root: Path, recursive: bool = True) -> list[Path]:
@@ -295,9 +294,46 @@ def batch_edit_in_place(
         relative = path.relative_to(root).as_posix()
         try:
             if path.suffix.lower() in _EMAIL_SUFFIXES:
-                # 이메일은 제자리 교체(형식 변경) 불가 — 내용 미처리, 파일명 rename은 Phase 2에서.
+                # 이메일: 키워드가 있으면 정리된 .md를 만들고 원본 이메일을 삭제한다.
+                # 원본은 backup_root에 백업하고, .md 재검증 통과 시에만 삭제한다.
+                report = file_service.search(path, request.criteria)
+                name_hit = name_redactor.name_contains_keyword(path.name, keywords, cs)
+                if report.total_matches == 0 and not name_hit:
+                    item = BatchEditItem(path=str(path), relative_path=relative)  # 깨끗 → 유지
+                    items.append(item)
+                    by_path[str(path)] = item
+                    continue
+                with tempfile.TemporaryDirectory(prefix="redactor_eml_") as tmp:
+                    edit = file_service.apply_edit(path, request, Path(tmp))
+                    md_tmp = Path(edit.output_path)
+                    verification = file_service.verify(md_tmp, request.criteria)
+                    if not verification.clean:
+                        item = BatchEditItem(
+                            path=str(path),
+                            relative_path=relative,
+                            edit=edit,
+                            verification=verification,
+                            error="이메일 정리본 재검증 실패로 원본을 그대로 유지했습니다(.md 미생성).",
+                        )
+                        items.append(item)
+                        by_path[str(path)] = item
+                        continue
+                    backup_path = backup_root / path.relative_to(root)
+                    backup_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, backup_path)
+                    clean_stem = Path(name_redactor.redact_filename(path.name, keywords, cs)).stem
+                    md_name = _disk_unique(path.parent, f"{clean_stem}_redacted.md")
+                    md_final = path.parent / md_name
+                    shutil.move(str(md_tmp), str(md_final))
+                path.unlink()  # 원본 이메일 삭제(백업은 유지)
                 item = BatchEditItem(
-                    path=str(path), relative_path=relative, note=_INPLACE_EMAIL_NOTE
+                    path=str(path),
+                    relative_path=relative,
+                    output_path=str(md_final),
+                    edit=edit,
+                    verification=verification,
+                    renamed_to=md_final.relative_to(root).as_posix(),
+                    note="이메일 정리본 .md 생성, 원본 이메일 삭제",
                 )
                 items.append(item)
                 by_path[str(path)] = item
