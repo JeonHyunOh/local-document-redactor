@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pptx import Presentation
 
-from . import keyword_matcher
+from . import keyword_matcher, pattern_matcher
 from .models import (
     EditRequest,
     EditResult,
@@ -52,8 +52,21 @@ def _count(text: str, keywords: list[str], case_sensitive: bool) -> int:
     return total
 
 
+def _text_hits(text: str, criteria: SearchCriteria) -> int:
+    """문단 텍스트의 키워드 + 패턴 매치 총 개수."""
+    kw = _count(text, criteria.keywords, criteria.case_sensitive)
+    pat = len(pattern_matcher.find_patterns(text, criteria.redact_account_numbers))
+    return kw + pat
+
+
+def _redact(text: str, criteria: SearchCriteria) -> str:
+    """키워드 제거 후 패턴도 제거한다."""
+    out = keyword_matcher.remove_keywords(text, criteria.keywords, criteria.case_sensitive)
+    return pattern_matcher.remove_patterns(out, criteria.redact_account_numbers)
+
+
 def search(path: Path, criteria: SearchCriteria) -> SearchReport:
-    """슬라이드·표·노트 문단에서 키워드를 검색한다(파일 무수정)."""
+    """슬라이드·표·노트 문단에서 키워드·패턴을 검색한다(파일 무수정)."""
     path = Path(path)
     prs = Presentation(str(path))
     keywords = keyword_matcher.normalize_keywords(criteria.keywords)
@@ -73,6 +86,17 @@ def search(path: Path, criteria: SearchCriteria) -> SearchReport:
                         context=text,
                     )
                 )
+        for label, _value in pattern_matcher.find_patterns(text, criteria.redact_account_numbers):
+            matches.append(
+                PptxMatch(
+                    file_name=path.name,
+                    slide=slide_index,
+                    location=location,
+                    keyword=f"[{label}]",
+                    count=1,
+                    context=text,
+                )
+            )
     return SearchReport(
         file_name=path.name, file_type=FileType.PPTX, criteria=criteria, pptx_matches=matches
     )
@@ -84,21 +108,19 @@ def apply_edit(
     """슬라이드 텍스트에서 키워드를 제거해 <stem>_edited.pptx로 저장한다(selected 무시)."""
     path = Path(path)
     prs = Presentation(str(path))
-    keywords = request.criteria.keywords
-    cs = request.criteria.case_sensitive
 
     removed = 0
     for _, _, para in _iter_paragraphs(prs):
-        before = _count(para.text, keywords, cs)
+        before = _text_hits(para.text, request.criteria)
         if before == 0:
             continue
         removed += before
-        # 런 단위 제거
+        # 런 단위 제거(키워드 + 패턴)
         for run in para.runs:
-            run.text = keyword_matcher.remove_keywords(run.text, keywords, cs)
+            run.text = _redact(run.text, request.criteria)
         # 문단에 남으면(쪼개진 런) 첫 런에 정리된 문단 텍스트를 넣고 나머지 런 비우기
-        if _count(para.text, keywords, cs) > 0 and para.runs:
-            cleaned = keyword_matcher.remove_keywords(para.text, keywords, cs)
+        if _text_hits(para.text, request.criteria) > 0 and para.runs:
+            cleaned = _redact(para.text, request.criteria)
             para.runs[0].text = cleaned
             for run in para.runs[1:]:
                 run.text = ""
