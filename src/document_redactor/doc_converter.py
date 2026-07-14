@@ -97,7 +97,7 @@ def _convert_hwp(src: Path, out_pdf: Path) -> None:
             hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
         except Exception:  # noqa: BLE001 - 보안모듈 없으면 무시(대화상자 가능)
             pass
-        hwp.Open(str(src))
+        hwp.Open(str(src), "", "")  # (filename, format="자동", arg) — 3개 인자 필요
         hwp.SaveAs(str(out_pdf), "PDF", "")
     except Exception as exc:  # noqa: BLE001
         raise ConversionError(f"한글 변환 실패: {src.name} — {exc}") from exc
