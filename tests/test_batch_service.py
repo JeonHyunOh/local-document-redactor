@@ -316,7 +316,7 @@ def test_batch_edit_email_produces_markdown(tmp_path: Path, make_eml):
     assert (root / "메일.eml").exists()
 
 
-def test_batch_edit_in_place_skips_email_content_but_renames(tmp_path: Path, make_eml):
+def test_batch_edit_in_place_email_produces_md_and_deletes_original(tmp_path: Path, make_eml):
     root = tmp_path / "src"
     make_eml(root / "포스코_메일.eml", subject="포스코", body="대외비")
     backup = tmp_path / "src_backup"
@@ -324,14 +324,28 @@ def test_batch_edit_in_place_skips_email_content_but_renames(tmp_path: Path, mak
     items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
     item = items[0]
 
-    # 내용은 처리하지 않음 → 원본 .eml 그대로(본문에 대외비 남아 있음)
-    renamed = root / "메일.eml"
-    assert renamed.exists() and not (root / "포스코_메일.eml").exists()  # 파일명만 rename
-    # 원본 내용 미수정 확인은 파싱해서(전송 인코딩 무관) — subject의 '포스코', body의 '대외비' 잔존
-    reloaded = email_service._load(renamed)
-    assert "포스코" in reloaded.subject and "대외비" in reloaded.body
-    assert item.note is not None and "제자리" in item.note
-    assert item.renamed_to == "메일.eml"
+    # 원본 .eml은 삭제되고, 정리된 .md가 생성됨(파일명 키워드도 정리)
+    assert not (root / "포스코_메일.eml").exists()
+    md = root / "메일_redacted.md"
+    assert md.exists()
+    text = md.read_text(encoding="utf-8")
+    assert "포스코" not in text and "대외비" not in text
+    # 원본은 백업에 보존(복구 가능)
+    assert (backup / "포스코_메일.eml").exists()
+    assert item.output_path == str(md)
+    assert item.renamed_to == "메일_redacted.md"
+
+
+def test_batch_edit_in_place_clean_email_untouched(tmp_path: Path, make_eml):
+    # 키워드가 전혀 없는 이메일은 변환·삭제하지 않는다.
+    root = tmp_path / "src"
+    make_eml(root / "공지.eml", subject="공지", body="일반 안내")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    assert (root / "공지.eml").exists()  # 그대로 유지
+    assert not any(p.suffix == ".md" for p in root.rglob("*"))
 
 
 # --------------------------------------------------------------------------- #
