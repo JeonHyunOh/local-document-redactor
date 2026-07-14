@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-from document_redactor import file_service
+from document_redactor import email_service, file_service, pptx_service
 from document_redactor.file_service import UnsupportedFileError
 from document_redactor.models import FileType, SearchCriteria
 
@@ -49,3 +49,24 @@ def test_routing_dispatches_to_excel(tmp_path: Path):
     report = file_service.search(path, SearchCriteria(keywords=["대외비"]))
     assert report.file_type is FileType.XLSX
     assert report.total_matches == 1
+
+
+def test_detect_file_type_accepts_email():
+    assert file_service.detect_file_type("a.msg") is FileType.MSG
+    assert file_service.detect_file_type("a.eml") is FileType.EML
+
+
+def test_detect_file_type_rejects_md_input():
+    with pytest.raises(file_service.UnsupportedFileError):
+        file_service.detect_file_type("a.md")
+
+
+def test_service_for_routes_email_and_md():
+    assert file_service._service_for(Path("a.msg")) is email_service
+    assert file_service._service_for(Path("a.eml")) is email_service
+    assert file_service._service_for(Path("out_redacted.md")) is email_service
+
+
+def test_detect_and_route_pptx():
+    assert file_service.detect_file_type("a.pptx") is FileType.PPTX
+    assert file_service._service_for(Path("a.pptx")) is pptx_service

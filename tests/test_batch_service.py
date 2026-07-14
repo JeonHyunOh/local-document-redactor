@@ -7,7 +7,8 @@ from pathlib import Path
 import fitz
 from openpyxl import Workbook, load_workbook
 
-from document_redactor import batch_service, file_service
+from document_redactor import batch_service, email_service, file_service
+from document_redactor import name_redactor  # noqa: F401  (이름 정리 시나리오에서 사용)
 from document_redactor.models import (
     EditRequest,
     ExcelAction,
@@ -171,3 +172,237 @@ def test_batch_edit_in_place_keeps_original_when_verify_fails(tmp_path: Path, mo
     assert not backup.exists()
     # 결과에 실패 사유 기록
     assert items[0].error and "재검증 실패" in items[0].error
+
+
+# --------------------------------------------------------------------------- #
+# 파일명·폴더명 키워드 정리 — batch_edit(출력본)
+# --------------------------------------------------------------------------- #
+def test_batch_edit_redacts_output_names(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_a.xlsx", "대외비 문서")                 # 내용+이름 매치
+    _xlsx(root / "포스코_폴더" / "b.xlsx", "대외비 메모")        # 폴더명 매치 + 내용 매치
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("대외비", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit(root, req, out, recursive=True)
+
+    # 최상위 파일명에서 '포스코' 제거 (편집본 접미사는 유지)
+    assert (out / "a_edited.xlsx").exists()
+    # 폴더명에서 '포스코' 제거되어 정리된 폴더에 저장
+    assert (out / "폴더" / "b_edited.xlsx").exists()
+    # 원본은 그대로
+    assert (root / "포스코_a.xlsx").exists()
+
+
+def test_batch_edit_copies_name_only_match(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_보고서.xlsx", "공개 자료")  # 내용 깨끗, 파일명만 매치
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit(root, req, out, recursive=True)
+    item = items[0]
+
+    # 정리된 이름으로 복사됨(내용 무수정)
+    copied = out / "보고서.xlsx"
+    assert copied.exists()
+    assert load_workbook(copied).active["A1"].value == "공개 자료"
+    assert item.renamed_to == "보고서.xlsx"
+
+
+def test_batch_edit_skips_when_content_and_name_clean(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "일반.xlsx", "공개 자료")
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit(root, req, out, recursive=True)
+
+    assert items[0].output_path is None
+    assert not out.exists() or not any(out.rglob("*.xlsx"))
+
+
+def test_batch_edit_name_collision_gets_suffix(tmp_path: Path):
+    root = tmp_path / "src"
+    # 서로 다른 두 파일이 정리 후 같은 이름('보고서.xlsx')이 됨 — 둘 다 이름만 매치(내용 깨끗)
+    _xlsx(root / "포스코_보고서.xlsx", "공개 자료")
+    _xlsx(root / "보고서_포스코.xlsx", "공개 자료")
+    out = tmp_path / "out"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit(root, req, out, recursive=True)
+
+    names = {p.name for p in out.glob("*.xlsx")}
+    assert names == {"보고서.xlsx", "보고서_1.xlsx"}
+
+
+# --------------------------------------------------------------------------- #
+# 파일명·폴더명 키워드 정리 — batch_edit_in_place(제자리 rename)
+# --------------------------------------------------------------------------- #
+def test_batch_edit_in_place_renames_name_only_file(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_보고서.xlsx", "공개 자료")  # 내용 깨끗, 파일명만 매치
+    backup = tmp_path / "src_backup"
+
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    # 파일이 정리된 이름으로 rename됨, 원래 이름은 사라짐
+    assert (root / "보고서.xlsx").exists()
+    assert not (root / "포스코_보고서.xlsx").exists()
+    # 내용은 무수정
+    assert load_workbook(root / "보고서.xlsx").active["A1"].value == "공개 자료"
+    # rename 전 백업 생성
+    assert (backup / "포스코_보고서.xlsx").exists()
+    # rename 로그 기록
+    log = (backup / "_rename_log.txt").read_text(encoding="utf-8")
+    assert "포스코_보고서.xlsx" in log and "보고서.xlsx" in log
+    assert items[0].renamed_to == "보고서.xlsx"
+
+
+def test_batch_edit_in_place_renames_folder_bottom_up_not_root(tmp_path: Path):
+    root = tmp_path / "포스코_루트"          # 루트 이름에도 키워드 → 변경되면 안 됨
+    _xlsx(root / "포스코_하위" / "a.xlsx", "대외비 문서")
+    backup = tmp_path / "포스코_루트_backup"
+
+    req = EditRequest(criteria=_criteria("대외비", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    # 하위 폴더는 rename, 루트는 그대로
+    assert root.exists()                      # 루트 미변경
+    assert (root / "하위").is_dir()            # 하위 폴더 '포스코' 제거
+    assert not (root / "포스코_하위").exists()
+    assert (root / "하위" / "a.xlsx").exists()  # 파일도 함께 이동
+
+
+def test_batch_edit_in_place_content_and_name_match(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "포스코_a.xlsx", "대외비 문서")  # 내용+이름 둘 다 매치
+    backup = tmp_path / "src_backup"
+
+    req = EditRequest(criteria=_criteria("대외비", "포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    # 내용 편집 + 파일명 정리 모두 적용
+    assert (root / "a.xlsx").exists()
+    assert load_workbook(root / "a.xlsx").active["A1"].value is None
+    # 백업엔 원본 이름·원본 내용 보존
+    assert load_workbook(backup / "포스코_a.xlsx").active["A1"].value == "대외비 문서"
+
+
+# --------------------------------------------------------------------------- #
+# 이메일(.msg/.eml) 배치 처리
+# --------------------------------------------------------------------------- #
+def test_scan_folder_includes_email(tmp_path: Path, make_eml):
+    _xlsx(tmp_path / "a.xlsx", "x")
+    make_eml(tmp_path / "b.eml", subject="s", body="x")
+    names = {p.name for p in batch_service.scan_folder(tmp_path, recursive=True)}
+    assert names == {"a.xlsx", "b.eml"}
+
+
+def test_batch_edit_email_produces_markdown(tmp_path: Path, make_eml):
+    root = tmp_path / "src"
+    make_eml(root / "메일.eml", subject="포스코 보고", body="대외비 내용")
+    out = tmp_path / "out"
+    req = EditRequest(criteria=_criteria("포스코", "대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit(root, req, out, recursive=True)
+
+    produced = out / "메일_redacted.md"
+    assert produced.exists()
+    text = produced.read_text(encoding="utf-8")
+    assert "포스코" not in text and "대외비" not in text
+    assert any(i.output_path for i in items)
+    # 원본 보존
+    assert (root / "메일.eml").exists()
+
+
+def test_batch_edit_in_place_skips_email_content_but_renames(tmp_path: Path, make_eml):
+    root = tmp_path / "src"
+    make_eml(root / "포스코_메일.eml", subject="포스코", body="대외비")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코", "대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+    item = items[0]
+
+    # 내용은 처리하지 않음 → 원본 .eml 그대로(본문에 대외비 남아 있음)
+    renamed = root / "메일.eml"
+    assert renamed.exists() and not (root / "포스코_메일.eml").exists()  # 파일명만 rename
+    # 원본 내용 미수정 확인은 파싱해서(전송 인코딩 무관) — subject의 '포스코', body의 '대외비' 잔존
+    reloaded = email_service._load(renamed)
+    assert "포스코" in reloaded.subject and "대외비" in reloaded.body
+    assert item.note is not None and "제자리" in item.note
+    assert item.renamed_to == "메일.eml"
+
+
+# --------------------------------------------------------------------------- #
+# 형식 제거(.dwg/.png/.nwd) + 확장자 무관 파일명 정리 + pptx 배치
+# --------------------------------------------------------------------------- #
+def test_scan_all_files_returns_every_extension(tmp_path: Path):
+    _xlsx(tmp_path / "a.xlsx", "x")
+    (tmp_path / "b.dwg").write_bytes(b"dwg")
+    (tmp_path / "c.txt").write_text("t", encoding="utf-8")
+    (tmp_path / "~$lock.xlsx").write_bytes(b"lock")
+    names = {p.name for p in batch_service.scan_all_files(tmp_path, recursive=True)}
+    assert names == {"a.xlsx", "b.dwg", "c.txt"}
+
+
+def test_in_place_removes_target_suffixes_hard_delete(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "a.xlsx", "대외비 문서")
+    (root / "도면.dwg").write_bytes(b"dwg")
+    (root / "이미지.png").write_bytes(b"png")
+    (root / "모델.nwd").write_bytes(b"nwd")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("대외비"), excel_action=ExcelAction.CLEAR_CELL)
+
+    items = batch_service.batch_edit_in_place(
+        root, req, backup, recursive=True, remove_suffixes={".dwg", ".png", ".nwd"}
+    )
+    # 완전 삭제됨(백업 없음)
+    assert not (root / "도면.dwg").exists()
+    assert not (root / "이미지.png").exists()
+    assert not (root / "모델.nwd").exists()
+    assert not (backup / "도면.dwg").exists()
+    # 삭제 로그는 확장자별 개수만 기록하고 파일명은 남기지 않는다
+    log = (backup / "_removed_log.txt").read_text(encoding="utf-8")
+    assert "도면" not in log and "이미지" not in log and "모델" not in log  # 파일명 미기록
+    assert ".dwg 1개" in log and ".png 1개" in log and ".nwd 1개" in log     # 확장자별 개수
+    # 결과에 note
+    assert any(i.note and "완전 삭제" in i.note for i in items)
+    # 지원 파일은 정상 편집
+    assert load_workbook(root / "a.xlsx").active["A1"].value is None
+
+
+def test_in_place_removal_off_by_default(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "a.xlsx", "대외비")
+    (root / "도면.dwg").write_bytes(b"dwg")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)  # remove_suffixes 없음
+    assert (root / "도면.dwg").exists()  # 삭제 안 됨
+
+
+def test_in_place_renames_unsupported_extension_by_filename(tmp_path: Path):
+    root = tmp_path / "src"
+    root.mkdir(parents=True)
+    (root / "포스코_메모.txt").write_text("공개", encoding="utf-8")  # 미지원 형식, 파일명만 키워드
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    assert (root / "메모.txt").exists()  # 확장자 무관 파일명 정리
+    assert not (root / "포스코_메모.txt").exists()
+    assert any(i.renamed_to == "메모.txt" for i in items)
+
+
+def test_in_place_pptx_content_edited(tmp_path: Path, make_pptx):
+    root = tmp_path / "src"
+    make_pptx(root / "deck.pptx", title="포스코 제목", body_lines=["대외비 본문"])
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코", "대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    from document_redactor import pptx_service
+    assert pptx_service.search(root / "deck.pptx", req.criteria).total_matches == 0
+    assert (backup / "deck.pptx").exists()  # 원본 백업

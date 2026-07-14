@@ -22,11 +22,15 @@ class SearchMode(str, Enum):
 
 
 class FileType(str, Enum):
-    """MVP가 지원하는 파일 유형."""
+    """지원 입력 유형(XLSX/XLSM/PDF/MSG/EML)과 렌더 출력 유형(MD)."""
 
     XLSX = "xlsx"
     XLSM = "xlsm"
     PDF = "pdf"
+    MSG = "msg"
+    EML = "eml"
+    PPTX = "pptx"
+    MD = "md"  # 이메일을 정리해 렌더한 Markdown 산출물(입력 유형 아님)
 
 
 class ExcelAction(str, Enum):
@@ -91,19 +95,48 @@ class PdfMatch(BaseModel):
     rects: list[tuple[float, float, float, float]] = Field(default_factory=list)  # (x0,y0,x1,y1)
 
 
+class EmailMatch(BaseModel):
+    """이메일을 렌더한 Markdown의 매치 한 건."""
+
+    file_name: str
+    field: str                # "제목"/"보낸사람"/"받는사람"/"참조"/"날짜"/"첨부"/"본문"
+    line: int                 # 렌더된 .md의 1-기반 줄 번호
+    keyword: str
+    count: int                # 해당 줄에서 발견된 횟수
+    context: str              # 해당 줄 텍스트
+
+
+class PptxMatch(BaseModel):
+    """PowerPoint 슬라이드 텍스트 매치 한 건."""
+
+    file_name: str
+    slide: int                # 1-기반 슬라이드 번호
+    location: str             # "본문"/"표"/"노트"
+    keyword: str
+    count: int                # 해당 문단에서 발견된 횟수
+    context: str              # 해당 문단 텍스트
+
+
 class SearchReport(BaseModel):
-    """한 파일 검색의 전체 결과. Excel/PDF 중 해당하는 목록만 채운다."""
+    """한 파일 검색의 전체 결과. Excel/PDF/이메일/PPTX 중 해당하는 목록만 채운다."""
 
     file_name: str
     file_type: FileType
     criteria: SearchCriteria
     excel_matches: list[ExcelMatch] = Field(default_factory=list)
     pdf_matches: list[PdfMatch] = Field(default_factory=list)
+    email_matches: list[EmailMatch] = Field(default_factory=list)
+    pptx_matches: list[PptxMatch] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)  # 사용자 안내(예: 텍스트 레이어 없음 가능성)
 
     @property
     def total_matches(self) -> int:
-        return len(self.excel_matches) + sum(m.count for m in self.pdf_matches)
+        return (
+            len(self.excel_matches)
+            + sum(m.count for m in self.pdf_matches)
+            + sum(m.count for m in self.email_matches)
+            + sum(m.count for m in self.pptx_matches)
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -162,6 +195,8 @@ class BatchEditItem(BaseModel):
     edit: EditResult | None = None
     verification: VerificationResult | None = None
     error: str | None = None
+    renamed_to: str | None = None  # 이름 정리로 바뀐 최종 경로/파일명(변경 없으면 None)
+    note: str | None = None  # 비오류 안내(예: 제자리 모드에서 이메일 내용 미지원)
 
     @property
     def clean(self) -> bool | None:

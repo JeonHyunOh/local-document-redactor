@@ -18,7 +18,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from document_redactor import batch_service, excel_service, file_service
+from document_redactor import batch_service, excel_service, file_service, name_redactor
 from document_redactor.file_service import UnsupportedFileError
 from document_redactor.keyword_matcher import normalize_keywords
 from document_redactor.models import (
@@ -44,6 +44,9 @@ _EXCEL_ACTION_LABEL = {
     ExcelAction.DELETE_ROW: "행 전체 삭제",
 }
 _LABEL_EXCEL_ACTION = {v: k for k, v in _EXCEL_ACTION_LABEL.items()}
+
+# 제자리 모드에서 opt-in으로 완전 삭제할 확장자(내용 정리 불가 형식)
+_REMOVAL_SUFFIXES = {".dwg", ".png", ".nwd"}
 
 
 # --------------------------------------------------------------------------- #
@@ -105,7 +108,10 @@ def _zip_folder(folder: Path) -> bytes:
 # 단일 파일 모드
 # =========================================================================== #
 def render_single_file() -> None:
-    uploaded = st.file_uploader("파일 업로드 (.xlsx / .xlsm / 텍스트 PDF)", type=["xlsx", "xlsm", "pdf"])
+    uploaded = st.file_uploader(
+        "파일 업로드 (.xlsx / .xlsm / 텍스트 PDF / .msg / .eml / .pptx)",
+        type=["xlsx", "xlsm", "pdf", "msg", "eml", "pptx"],
+    )
 
     if st.button("🔍 검사하기", disabled=not (uploaded and keywords), help="파일을 수정하지 않고 검사만 합니다."):
         for key in ("s_report", "s_saved", "s_edit", "s_verify", "s_editor", "s_approve", "s_all_selected"):
@@ -133,7 +139,105 @@ def render_single_file() -> None:
     c2.metric("파일 유형", report.file_type.value.upper())
 
     if report.total_matches == 0:
-        st.info("발견된 키워드가 없습니다.")
+        up_name = uploaded.name if uploaded else Path(st.session_state.s_saved).name
+        if name_redactor.name_contains_keyword(up_name, keywords, case_sensitive):
+            clean_name = name_redactor.redact_filename(up_name, keywords, case_sensitive)
+            st.info("내용에는 키워드가 없지만 **파일명**에 키워드가 있어 파일명만 정리했습니다.")
+            st.caption(f"`{up_name}` → `{clean_name}`")
+            st.download_button(
+                "📥 파일명 정리본 다운로드 (내용 무수정)",
+                data=Path(st.session_state.s_saved).read_bytes(),
+                file_name=clean_name,
+                use_container_width=True,
+            )
+        else:
+            st.info("발견된 키워드가 없습니다.")
+        return
+
+    # 이메일(.msg/.eml): 삭제 방식 선택 없이 승인 → .md 산출
+    if report.file_type in (FileType.MSG, FileType.EML):
+        st.info("이메일은 서식·이미지·첨부 내용이 보존되지 않는 평문 `.md`로 정리됩니다. "
+                "원본 이메일은 수정되지 않습니다.")
+        st.dataframe(
+            [{"필드": m.field, "줄": m.line, "키워드": m.keyword, "개수": m.count, "문맥": m.context}
+             for m in report.email_matches],
+            use_container_width=True,
+        )
+        approved = st.checkbox("위 키워드를 제거한 .md 산출을 승인합니다.", key="s_approve_email")
+        if st.button("🗑️ 승인하고 .md 생성", disabled=not approved, type="primary"):
+            try:
+                request = EditRequest(criteria=report.criteria)
+                edit_result = file_service.apply_edit(st.session_state.s_saved, request, OUTPUT_DIR)
+                st.session_state.s_edit = edit_result
+                st.session_state.s_verify = file_service.verify(Path(edit_result.output_path), report.criteria)
+                st.session_state.s_all_selected = True
+            except Exception as exc:
+                st.error("`.md` 생성 중 오류가 발생했습니다. 결과 파일을 제공하지 않습니다.")
+                st.exception(exc)
+
+        edit_result = st.session_state.get("s_edit")
+        verification = st.session_state.get("s_verify")
+        if edit_result is None or verification is None:
+            return
+
+        st.subheader("처리 결과")
+        st.metric("제거된 키워드", edit_result.redactions_applied)
+        if verification.clean:
+            st.success("재검증 완료: 산출 .md에서 키워드가 확인되지 않습니다.")
+        else:
+            remaining = verification.remaining.total_matches if verification.remaining else 0
+            st.error(f"재검증 실패: .md에 키워드가 {remaining}건 남아 있습니다.")
+
+        src_stem = Path(name_redactor.redact_filename(Path(st.session_state.s_saved).name, keywords, case_sensitive)).stem
+        dl_name = f"{src_stem}_redacted.md"
+        st.download_button(
+            "📥 정리된 .md 다운로드",
+            data=Path(edit_result.output_path).read_bytes(),
+            file_name=dl_name,
+            use_container_width=True,
+        )
+        return
+
+    # PowerPoint(.pptx): 삭제 방식 선택 없이 승인 → 수정본 산출
+    if report.file_type is FileType.PPTX:
+        st.info("PowerPoint 슬라이드·표·노트의 텍스트에서 키워드를 제거합니다. 원본은 수정되지 않습니다.")
+        st.dataframe(
+            [{"슬라이드": m.slide, "위치": m.location, "키워드": m.keyword, "개수": m.count, "문맥": m.context}
+             for m in report.pptx_matches],
+            use_container_width=True,
+        )
+        approved = st.checkbox("위 키워드 제거를 승인합니다.", key="s_approve_pptx")
+        if st.button("🗑️ 승인하고 수정본 생성", disabled=not approved, type="primary"):
+            try:
+                request = EditRequest(criteria=report.criteria)
+                edit_result = file_service.apply_edit(st.session_state.s_saved, request, OUTPUT_DIR)
+                st.session_state.s_edit = edit_result
+                st.session_state.s_verify = file_service.verify(Path(edit_result.output_path), report.criteria)
+                st.session_state.s_all_selected = True
+            except Exception as exc:
+                st.error("수정본 생성 중 오류가 발생했습니다. 결과 파일을 제공하지 않습니다.")
+                st.exception(exc)
+
+        edit_result = st.session_state.get("s_edit")
+        verification = st.session_state.get("s_verify")
+        if edit_result is None or verification is None:
+            return
+
+        st.subheader("처리 결과")
+        st.metric("제거된 키워드", edit_result.redactions_applied)
+        if verification.clean:
+            st.success("재검증 완료: 산출본에서 키워드가 확인되지 않습니다.")
+        else:
+            remaining = verification.remaining.total_matches if verification.remaining else 0
+            st.error(f"재검증 실패: 키워드가 {remaining}건 남아 있습니다.")
+
+        src_stem = Path(name_redactor.redact_filename(Path(st.session_state.s_saved).name, keywords, case_sensitive)).stem
+        st.download_button(
+            "📥 수정본 다운로드",
+            data=Path(edit_result.output_path).read_bytes(),
+            file_name=f"{src_stem}_edited.pptx",
+            use_container_width=True,
+        )
         return
 
     # 삭제 방식 (Excel만)
@@ -192,9 +296,17 @@ def render_single_file() -> None:
         st.info(f"선택한 항목을 처리했습니다. 결과 파일에 남은 키워드 발견: {remaining}건 — 선택하지 않은 항목입니다.")
 
     output_path = Path(edit_result.output_path)
+    # 다운로드 파일명도 정리한다: 편집본 접미사(_edited/_redacted)는 유지하고
+    # 그 앞의 stem에서만 키워드를 제거한다.
+    suffix_tag = "_redacted" if report.file_type is FileType.PDF else "_edited"
+    src_name = Path(st.session_state.s_saved).name
+    dl_stem = Path(name_redactor.redact_filename(src_name, keywords, case_sensitive)).stem
+    dl_final = f"{dl_stem}{suffix_tag}{output_path.suffix}"
+    if dl_final != output_path.name:
+        st.caption(f"파일명 정리: `{output_path.name}` → `{dl_final}`")
     d1, d2 = st.columns(2)
-    d1.download_button("📥 수정본 다운로드", data=output_path.read_bytes(), file_name=output_path.name, use_container_width=True)
-    d2.download_button("📄 작업 로그 다운로드", data="\n".join(edit_result.log) or "(변경 없음)", file_name=f"{output_path.stem}_log.txt", use_container_width=True)
+    d1.download_button("📥 수정본 다운로드", data=output_path.read_bytes(), file_name=dl_final, use_container_width=True)
+    d2.download_button("📄 작업 로그 다운로드", data="\n".join(edit_result.log) or "(변경 없음)", file_name=f"{dl_stem}{suffix_tag}_log.txt", use_container_width=True)
 
 
 # =========================================================================== #
@@ -284,6 +396,12 @@ def render_folder() -> None:
             "재검증을 통과한 파일만 교체되며, 실패한 파일의 원본은 그대로 유지됩니다. "
             "처음에는 폴더 사본으로 시험해 보시길 권합니다."
         )
+        st.checkbox(
+            "CAD·이미지·3D 파일(.dwg/.png/.nwd) 완전 삭제 (복구 불가)",
+            key="b_remove_targets",
+        )
+        if st.session_state.get("b_remove_targets"):
+            st.warning("⚠️ 체크한 확장자 파일은 **백업 없이 완전 삭제**됩니다. `_removed_log.txt`에만 목록이 남습니다.")
 
     approve_label = (
         f"위 {len(hit_files)}개 파일의 원본을 덮어쓰는 데 동의합니다(백업 생성됨)."
@@ -300,7 +418,12 @@ def render_folder() -> None:
 
         try:
             if in_place:
-                st.session_state.b_edit = batch_service.batch_edit_in_place(root, request, backup_root, recursive=st.session_state.b_recursive, on_progress=_on_edit)
+                st.session_state.b_edit = batch_service.batch_edit_in_place(
+                    root, request, backup_root,
+                    recursive=st.session_state.b_recursive,
+                    on_progress=_on_edit,
+                    remove_suffixes=_REMOVAL_SUFFIXES if st.session_state.get("b_remove_targets") else None,
+                )
                 st.session_state.b_out = None
                 st.session_state.b_backup = str(backup_root)
             else:
@@ -323,21 +446,32 @@ def render_folder() -> None:
     edited = [e for e in edits if e.output_path]
     failed = [e for e in edits if e.error]
     not_clean = [e for e in edited if e.clean is False]
+    # 완전 삭제된 파일은 파일명을 노출하지 않는다(표에서 제외하고 개수만 요약).
+    def _is_removed(e) -> bool:
+        return bool(e.note and "완전 삭제" in e.note)
+    removed = [e for e in edits if _is_removed(e)]
+    visible = [e for e in edits if not _is_removed(e)]
 
     st.subheader("일괄 처리 결과")
     r1, r2, r3 = st.columns(3)
     r1.metric("제자리 교체" if in_place_done else "수정본 생성", len(edited))
     r2.metric("재검증 실패/유지", len(not_clean) + len(failed))
-    r3.metric("매치 없음", len(edits) - len(edited) - len(failed))
+    r3.metric("매치 없음", len(visible) - len(edited) - len(failed))
 
+    renamed = [e for e in edits if e.renamed_to]
     st.dataframe(
         [{"파일": e.relative_path,
+          "변경된 이름": e.renamed_to or "",
           "결과": ("⚠️ " + e.error if e.error
                   else "미생성(매치 없음)" if not e.output_path
                   else ("✅ 교체 완료" if in_place_done else "✅ 검증 통과") if e.clean
-                  else "⚠️ 키워드 잔존")} for e in edits],
+                  else "⚠️ 키워드 잔존")} for e in visible],
         use_container_width=True,
     )
+    if renamed:
+        st.caption(f"이름이 정리된 항목: {len(renamed)}개")
+    if in_place_done and renamed:
+        st.info(f"이름 변경 기록: `{Path(st.session_state.b_backup) / '_rename_log.txt'}`")
 
     if not_clean:
         st.error(f"{len(not_clean)}개 파일에서 키워드가 남아 있습니다. 해당 파일을 개별 확인하세요.")
@@ -347,6 +481,8 @@ def render_folder() -> None:
     if in_place_done:
         if edited:
             st.success(f"{len(edited)}개 파일을 제자리에서 교체했습니다.")
+        if removed:
+            st.info(f"완전 삭제된 파일: {len(removed)}개 (복구 불가) — 확장자별 개수: `{Path(st.session_state.b_backup) / '_removed_log.txt'}` (파일명은 화면·로그 모두에 표시하지 않음)")
         st.info(f"원본 백업 위치: `{st.session_state.b_backup}`")
     elif edited:
         out_root = Path(st.session_state.b_out)
