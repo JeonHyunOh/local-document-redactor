@@ -25,7 +25,8 @@ from .models import (
 # 진행률 콜백: (완료 개수, 전체 개수, 현재 파일 상대경로) -> None
 ProgressCallback = Callable[[int, int, str], None]
 
-_SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf", ".msg", ".eml", ".pptx"}
+_OFFICE_SUFFIXES = {".docx", ".doc", ".hwp", ".hwpx"}  # PDF로 변환 후 처리하는 문서
+_SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf", ".msg", ".eml", ".pptx"} | _OFFICE_SUFFIXES
 _EMAIL_SUFFIXES = {".msg", ".eml"}
 _REMOVED_LOG_NAME = "_removed_log.txt"  # 대상 폴더에 남기는 삭제 기록(도구 산출물, rename 대상 제외)
 
@@ -385,6 +386,52 @@ def batch_edit_in_place(
                     verification=verification,
                     renamed_to=md_final.relative_to(root).as_posix(),
                     note="이메일 정리본 .md 생성, 원본 이메일 삭제",
+                )
+                items.append(item)
+                by_path[str(path)] = item
+                continue
+
+            if path.suffix.lower() in _OFFICE_SUFFIXES:
+                # 오피스 문서: PDF로 변환·정리한 <stem>_redacted.pdf를 만들고 원본 문서 삭제.
+                # 제자리 교체(형식 유지) 불가하므로 이메일과 동일 패턴(백업 후 삭제).
+                report = file_service.search(path, request.criteria)
+                name_hit = name_redactor.name_contains_keyword(path.name, keywords, cs)
+                if report.total_matches == 0 and not name_hit:
+                    item = BatchEditItem(path=str(path), relative_path=relative)  # 깨끗 → 유지
+                    items.append(item)
+                    by_path[str(path)] = item
+                    continue
+                with tempfile.TemporaryDirectory(prefix="redactor_office_") as tmp:
+                    edit = file_service.apply_edit(path, request, Path(tmp))
+                    pdf_tmp = Path(edit.output_path)
+                    verification = file_service.verify(pdf_tmp, request.criteria)
+                    if not verification.clean:
+                        item = BatchEditItem(
+                            path=str(path),
+                            relative_path=relative,
+                            edit=edit,
+                            verification=verification,
+                            error="변환·정리본 재검증 실패로 원본을 그대로 유지했습니다(.pdf 미생성).",
+                        )
+                        items.append(item)
+                        by_path[str(path)] = item
+                        continue
+                    backup_path = backup_root / path.relative_to(root)
+                    backup_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, backup_path)
+                    clean_stem = Path(name_redactor.redact_filename(path.name, keywords, cs)).stem
+                    pdf_name = _disk_unique(path.parent, f"{clean_stem}_redacted.pdf")
+                    pdf_final = path.parent / pdf_name
+                    shutil.move(str(pdf_tmp), str(pdf_final))
+                path.unlink()  # 원본 문서 삭제(백업은 유지)
+                item = BatchEditItem(
+                    path=str(path),
+                    relative_path=relative,
+                    output_path=str(pdf_final),
+                    edit=edit,
+                    verification=verification,
+                    renamed_to=pdf_final.relative_to(root).as_posix(),
+                    note="문서를 PDF로 변환·정리, 원본 삭제",
                 )
                 items.append(item)
                 by_path[str(path)] = item
