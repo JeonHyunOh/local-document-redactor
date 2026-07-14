@@ -69,3 +69,13 @@ def test_verify_detects_remaining(make_pptx, tmp_path):
     assert verification.clean is False
     assert verification.remaining is not None
     assert verification.remaining.total_matches == 1
+
+
+def test_pptx_pattern_without_keyword(make_pptx, tmp_path):
+    p = make_pptx(tmp_path / "d.pptx", title="연락처 010-1234-5678", body_lines=["메일 a@b.com"])
+    out = tmp_path / "out"
+    req = EditRequest(criteria=SearchCriteria(keywords=[]))
+    rep = pptx_service.search(p, req.criteria)
+    assert rep.total_matches >= 2  # 전화 + 이메일
+    res = pptx_service.apply_edit(p, req, out)
+    assert pptx_service.verify(Path(res.output_path), req.criteria).clean

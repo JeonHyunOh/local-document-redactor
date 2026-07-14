@@ -68,6 +68,11 @@ with st.sidebar:
     case_sensitive = st.session_state.get("case_sensitive", False)
 
     st.divider()
+    st.caption("🔍 개인정보 패턴(이메일·주민번호·카드·전화)은 키워드와 무관하게 항상 자동 삭제됩니다.")
+    st.checkbox("계좌번호 패턴도 삭제 (⚠️ 일반 숫자열 오탐 가능)", key="redact_account")
+    redact_account = st.session_state.get("redact_account", False)
+
+    st.divider()
     if keywords:
         st.caption(f"정규화된 키워드 {len(keywords)}개")
         st.write("· " + "\n· ".join(keywords))
@@ -76,7 +81,12 @@ with st.sidebar:
 
 
 def build_criteria() -> SearchCriteria:
-    return SearchCriteria(keywords=keywords, mode=mode, case_sensitive=case_sensitive)
+    return SearchCriteria(
+        keywords=keywords,
+        mode=mode,
+        case_sensitive=case_sensitive,
+        redact_account_numbers=redact_account,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -113,7 +123,7 @@ def render_single_file() -> None:
         type=["xlsx", "xlsm", "pdf", "msg", "eml", "pptx"],
     )
 
-    if st.button("🔍 검사하기", disabled=not (uploaded and keywords), help="파일을 수정하지 않고 검사만 합니다."):
+    if st.button("🔍 검사하기", disabled=not uploaded, help="파일을 수정하지 않고 검사만 합니다(키워드 없어도 개인정보 패턴은 검사됨)."):
         for key in ("s_report", "s_saved", "s_edit", "s_verify", "s_editor", "s_approve", "s_all_selected"):
             st.session_state.pop(key, None)
         try:
@@ -317,7 +327,7 @@ def render_folder() -> None:
     folder_str = c1.text_input("폴더 경로 (로컬)", placeholder=r"예) /Users/이름/문서/검토대상  또는  C:\Users\이름\문서\검토대상")
     recursive = c2.checkbox("하위 폴더 포함", value=True)
 
-    if st.button("🔍 폴더 검사하기", disabled=not (folder_str.strip() and keywords), help="파일을 수정하지 않고 검사만 합니다."):
+    if st.button("🔍 폴더 검사하기", disabled=not folder_str.strip(), help="파일을 수정하지 않고 검사만 합니다(키워드 없어도 개인정보 패턴은 검사됨)."):
         for key in ("b_search", "b_edit", "b_root", "b_recursive", "b_in_place", "b_out", "b_backup"):
             st.session_state.pop(key, None)
         root = Path(folder_str).expanduser()

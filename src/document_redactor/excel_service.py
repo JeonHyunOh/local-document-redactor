@@ -14,7 +14,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
 
-from . import keyword_matcher
+from . import keyword_matcher, pattern_matcher
 from .models import (
     EditRequest,
     EditResult,
@@ -77,6 +77,19 @@ def search(path: Path, criteria: SearchCriteria) -> SearchReport:
                                 original_value=text,
                             )
                         )
+                    for label, _value in pattern_matcher.find_patterns(
+                        text, criteria.redact_account_numbers
+                    ):
+                        matches.append(
+                            ExcelMatch(
+                                file_name=path.name,
+                                sheet_name=sheet.title,
+                                cell=cell.coordinate,
+                                row=cell.row,
+                                keyword=f"[{label}]",  # 패턴은 유형 라벨로 구분
+                                original_value=text,
+                            )
+                        )
     finally:
         workbook.close()
 
@@ -136,6 +149,9 @@ def apply_edit(
         else:
             cells_changed, rows_deleted = _apply_all(workbook, action, criteria, log)
 
+        # 패턴은 키워드 선택·삭제 방식과 무관하게 항상 부분 제거한다(개인정보 자동 삭제).
+        cells_changed += _apply_patterns_all(workbook, criteria, log)
+
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{path.stem}_edited{path.suffix}"
         workbook.save(output_path)
@@ -150,6 +166,24 @@ def apply_edit(
         rows_deleted=rows_deleted,
         log=log,
     )
+
+
+def _apply_patterns_all(workbook, criteria, log: list[str]) -> int:
+    """모든 문자열 셀에서 정형 개인정보 패턴을 부분 제거한다(항상 적용). 변경 셀 수 반환."""
+    include_account = criteria.redact_account_numbers
+    changed = 0
+    for sheet in workbook.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                text = _searchable_text(cell)
+                if text is None:
+                    continue
+                new_value = pattern_matcher.remove_patterns(text, include_account)
+                if new_value != text:
+                    cell.value = new_value
+                    changed += 1
+                    log.append(f"{sheet.title}!{cell.coordinate}: 패턴 제거")
+    return changed
 
 
 def _apply_all(workbook, action, criteria, log: list[str]) -> tuple[int, int]:

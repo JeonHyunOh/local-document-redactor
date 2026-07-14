@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import zipfile
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -229,6 +230,50 @@ def batch_edit(
     return items
 
 
+def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
+    """zip을 dest_dir로 안전하게 해제한다(zip-slip 방지). 실패 시 예외를 던진다."""
+    with zipfile.ZipFile(zip_path) as zf:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        base = dest_dir.resolve()
+        for member in zf.namelist():
+            target = (dest_dir / member).resolve()
+            if target != base and base not in target.parents:
+                raise ValueError(f"안전하지 않은 zip 경로(zip-slip): {member}")
+        zf.extractall(dest_dir)
+
+
+def _extract_zips_in_place(
+    root: Path, backup_root: Path, recursive: bool, items: list[BatchEditItem]
+) -> None:
+    """트리의 .zip을 반복 해제한다(중첩 대응). 원본 zip은 백업 후 삭제, 실패는 격리."""
+    while True:
+        zips = [p for p in scan_all_files(root, recursive) if p.suffix.lower() == ".zip"]
+        if not zips:
+            return
+        progressed = False
+        for zpath in zips:
+            rel = zpath.relative_to(root).as_posix()
+            try:
+                dest = zpath.parent / zpath.stem
+                if dest.exists():
+                    dest = zpath.parent / _disk_unique(zpath.parent, zpath.stem)
+                _safe_extract_zip(zpath, dest)
+                backup_path = backup_root / zpath.relative_to(root)
+                backup_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(zpath, backup_path)
+                zpath.unlink()
+                items.append(
+                    BatchEditItem(
+                        path=str(zpath), relative_path=rel, note="압축 해제 후 원본 zip 삭제"
+                    )
+                )
+                progressed = True
+            except Exception as exc:  # noqa: BLE001 - 사유 기록 후 다음 zip 계속
+                items.append(BatchEditItem(path=str(zpath), relative_path=rel, error=str(exc)))
+        if not progressed:
+            return  # 남은 zip이 모두 실패(손상 등) → 무한루프 방지
+
+
 def _disk_unique(target_dir: Path, name: str) -> str:
     """target_dir 안에서 충돌하지 않는 이름을 만든다(현재 디렉터리 항목 기준)."""
     taken = {p.name for p in target_dir.iterdir()} if target_dir.exists() else set()
@@ -257,10 +302,15 @@ def batch_edit_in_place(
     """
     keywords = request.criteria.keywords
     cs = request.criteria.case_sensitive
-    files = scan_folder(root, recursive)
-    total = len(files)
     items: list[BatchEditItem] = []
     by_path: dict[str, BatchEditItem] = {}
+
+    # --- Phase Z: zip 해제(제자리 전용) — 원본 zip 백업 후 삭제, 중첩 반복. ---
+    # 해제 후 나온 파일이 이후 모든 단계(형식 제거·내용 편집·이름 정리)에 포함되도록 먼저 수행.
+    _extract_zips_in_place(root, backup_root, recursive, items)
+
+    files = scan_folder(root, recursive)  # 해제된 파일 포함
+    total = len(files)
 
     # --- Phase 0: 형식 제거(opt-in, 완전 삭제·백업 없음) ---
     # 로그에는 확장자별 삭제 개수만 남기고 파일명은 기록하지 않는다(삭제 대상 파일명 자체가
