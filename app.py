@@ -446,12 +446,17 @@ def render_folder() -> None:
     edited = [e for e in edits if e.output_path]
     failed = [e for e in edits if e.error]
     not_clean = [e for e in edited if e.clean is False]
+    # 완전 삭제된 파일은 파일명을 노출하지 않는다(표에서 제외하고 개수만 요약).
+    def _is_removed(e) -> bool:
+        return bool(e.note and "완전 삭제" in e.note)
+    removed = [e for e in edits if _is_removed(e)]
+    visible = [e for e in edits if not _is_removed(e)]
 
     st.subheader("일괄 처리 결과")
     r1, r2, r3 = st.columns(3)
     r1.metric("제자리 교체" if in_place_done else "수정본 생성", len(edited))
     r2.metric("재검증 실패/유지", len(not_clean) + len(failed))
-    r3.metric("매치 없음", len(edits) - len(edited) - len(failed))
+    r3.metric("매치 없음", len(visible) - len(edited) - len(failed))
 
     renamed = [e for e in edits if e.renamed_to]
     st.dataframe(
@@ -460,7 +465,7 @@ def render_folder() -> None:
           "결과": ("⚠️ " + e.error if e.error
                   else "미생성(매치 없음)" if not e.output_path
                   else ("✅ 교체 완료" if in_place_done else "✅ 검증 통과") if e.clean
-                  else "⚠️ 키워드 잔존")} for e in edits],
+                  else "⚠️ 키워드 잔존")} for e in visible],
         use_container_width=True,
     )
     if renamed:
@@ -476,9 +481,8 @@ def render_folder() -> None:
     if in_place_done:
         if edited:
             st.success(f"{len(edited)}개 파일을 제자리에서 교체했습니다.")
-        removed = [e for e in edits if e.note and "완전 삭제" in e.note]
         if removed:
-            st.info(f"완전 삭제된 파일: {len(removed)}개 (복구 불가) — 확장자별 개수: `{Path(st.session_state.b_backup) / '_removed_log.txt'}` (파일명은 기록하지 않음)")
+            st.info(f"완전 삭제된 파일: {len(removed)}개 (복구 불가) — 확장자별 개수: `{Path(st.session_state.b_backup) / '_removed_log.txt'}` (파일명은 화면·로그 모두에 표시하지 않음)")
         st.info(f"원본 백업 위치: `{st.session_state.b_backup}`")
     elif edited:
         out_root = Path(st.session_state.b_out)
