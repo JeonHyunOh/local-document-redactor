@@ -38,7 +38,7 @@ def test_save_upload_writes_safe_name(tmp_path: Path):
 
 def test_save_upload_rejects_unsupported(tmp_path: Path):
     with pytest.raises(UnsupportedFileError):
-        file_service.save_upload(b"x", "macro.docx", tmp_path)
+        file_service.save_upload(b"x", "old.hancom", tmp_path)
 
 
 def test_routing_dispatches_to_excel(tmp_path: Path):
