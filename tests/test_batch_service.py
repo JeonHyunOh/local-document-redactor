@@ -377,14 +377,41 @@ def test_in_place_removes_target_suffixes_hard_delete(tmp_path: Path):
     assert not (root / "이미지.png").exists()
     assert not (root / "모델.nwd").exists()
     assert not (backup / "도면.dwg").exists()
-    # 삭제 로그는 확장자별 개수만 기록하고 파일명은 남기지 않는다
-    log = (backup / "_removed_log.txt").read_text(encoding="utf-8")
+    # 삭제 로그는 대상 폴더 안에 저장하고, 확장자별 개수만 기록(파일명 미기록)
+    assert not (backup / "_removed_log.txt").exists()  # 백업 폴더가 아니라
+    log = (root / "_removed_log.txt").read_text(encoding="utf-8")  # 대상 폴더에 저장
     assert "도면" not in log and "이미지" not in log and "모델" not in log  # 파일명 미기록
     assert ".dwg 1개" in log and ".png 1개" in log and ".nwd 1개" in log     # 확장자별 개수
     # 결과에 note
     assert any(i.note and "완전 삭제" in i.note for i in items)
     # 지원 파일은 정상 편집
     assert load_workbook(root / "a.xlsx").active["A1"].value is None
+
+
+def test_removed_log_not_mangled_when_keyword_matches_its_name(tmp_path: Path):
+    # 키워드가 '_removed_log.txt' 이름과 겹쳐도 로그 파일은 Phase 2a rename 대상이 아니다.
+    root = tmp_path / "src"
+    _xlsx(root / "a.xlsx", "대외비")
+    (root / "도면.dwg").write_bytes(b"dwg")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("대외비", "log"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True, remove_suffixes={".dwg"})
+
+    assert (root / "_removed_log.txt").exists()  # 원래 이름 그대로 유지
+    assert not (root / "removed_log.txt").exists()  # 훼손된 이름 없음
+
+
+def test_in_place_no_spurious_rename_when_keyword_only_in_extension(tmp_path: Path):
+    # 키워드가 확장자에만 있으면(정리해도 이름 불변) rename하지 않는다(자기 충돌 방지).
+    root = tmp_path / "src"
+    _xlsx(root / "a.xlsx", "대외비")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("대외비", "xlsx"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    assert (root / "a.xlsx").exists()          # 그대로
+    assert not (root / "a_1.xlsx").exists()      # 헛된 접미사 rename 없음
+    assert all(i.renamed_to is None for i in items)
 
 
 def test_in_place_removal_off_by_default(tmp_path: Path):
