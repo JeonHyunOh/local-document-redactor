@@ -23,7 +23,7 @@ from .models import (
 # 진행률 콜백: (완료 개수, 전체 개수, 현재 파일 상대경로) -> None
 ProgressCallback = Callable[[int, int, str], None]
 
-_SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf", ".msg", ".eml"}
+_SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf", ".msg", ".eml", ".pptx"}
 _EMAIL_SUFFIXES = {".msg", ".eml"}
 _INPLACE_EMAIL_NOTE = "제자리 모드는 이메일 내용을 지원하지 않습니다(별도 출력 폴더 모드를 사용하세요)."
 
@@ -48,6 +48,19 @@ def scan_folder(root: Path, recursive: bool = True) -> list[Path]:
         and not p.name.startswith(".")
     ]
     return sorted(files)
+
+
+def scan_all_files(root: Path, recursive: bool = True) -> list[Path]:
+    """숨김·Office 잠금(~$) 파일을 제외한 모든 파일(확장자 무관)을 정렬해 반환한다.
+
+    확장자 무관 파일명 정리·형식 제거가 지원 형식에 국한되지 않도록 하는 스캔이다.
+    """
+    globber = root.rglob("*") if recursive else root.glob("*")
+    return sorted(
+        p
+        for p in globber
+        if p.is_file() and not p.name.startswith("~$") and not p.name.startswith(".")
+    )
 
 
 def batch_search(
@@ -227,13 +240,16 @@ def batch_edit_in_place(
     backup_root: Path,
     recursive: bool = True,
     on_progress: ProgressCallback | None = None,
+    remove_suffixes: set[str] | None = None,
 ) -> list[BatchEditItem]:
     """매치가 있는 파일을 편집해 제자리 교체하고(백업 후), 이름의 키워드도 제거한다.
 
+    Phase 0(opt-in): remove_suffixes가 주어지면 해당 확장자 파일을 **완전 삭제**한다
+             (백업 없음, backup_root/_removed_log.txt에 목록 기록, 복구 불가). 기본은 미실행.
     Phase 1: 내용 편집 → 재검증 통과 시에만 백업 후 제자리 교체(기존 안전 순서 유지).
     Phase 2: 디스크에서 파일→폴더(bottom-up) 순으로 이름의 키워드를 제거해 rename한다.
-             루트 폴더 자체는 제외. rename 전 원본 백업을 보장하고, 모든 rename을
-             backup_root/_rename_log.txt에 (이전상대경로 → 새상대경로)로 남긴다.
+             파일 rename은 **확장자 무관 모든 파일** 대상. 루트 폴더 자체는 제외.
+             rename 전 원본 백업을 보장하고, 모든 rename을 backup_root/_rename_log.txt에 남긴다.
 
     backup_root에는 root의 하위 폴더 구조가 그대로 재현된다. 내용 편집 파일의
     output_path는 교체된 원본 경로를, 이름이 바뀐 파일은 최종 경로를 가리킨다.
@@ -244,6 +260,32 @@ def batch_edit_in_place(
     total = len(files)
     items: list[BatchEditItem] = []
     by_path: dict[str, BatchEditItem] = {}
+
+    # --- Phase 0: 형식 제거(opt-in, 완전 삭제·백업 없음) ---
+    removed_log: list[str] = []
+    if remove_suffixes:
+        targets = {s.lower() for s in remove_suffixes}
+        for path in scan_all_files(root, recursive):
+            if path.suffix.lower() not in targets:
+                continue
+            rel = path.relative_to(root).as_posix()
+            try:
+                path.unlink()
+                removed_log.append(rel)
+                items.append(
+                    BatchEditItem(
+                        path=str(path),
+                        relative_path=rel,
+                        note="완전 삭제됨(제거 대상 확장자)",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - 사유 기록 후 계속
+                items.append(BatchEditItem(path=str(path), relative_path=rel, error=str(exc)))
+    if removed_log:
+        backup_root.mkdir(parents=True, exist_ok=True)
+        (backup_root / "_removed_log.txt").write_text(
+            "\n".join(removed_log) + "\n", encoding="utf-8"
+        )
 
     # --- Phase 1: 내용 편집(기존 동작) ---
     for index, path in enumerate(files, start=1):
@@ -308,14 +350,14 @@ def batch_edit_in_place(
     # --- Phase 2: 이름 rename (파일 먼저, 그다음 폴더 bottom-up) ---
     renames: list[tuple[str, str]] = []  # (이전상대, 새상대)
 
-    # 2a) 파일 rename — Phase 1에서 실패(error)한 파일은 건드리지 않는다.
-    for path in files:
+    # 2a) 파일 rename — 확장자 무관 모든 파일. Phase 1 실패(error) 파일은 건드리지 않는다.
+    for path in scan_all_files(root, recursive):
         item = by_path.get(str(path))
-        if item is None or item.error:
+        if item is not None and item.error:
             continue
         if not name_redactor.name_contains_keyword(path.name, keywords, cs):
             continue
-        # 백업 보장(이름-only로 Phase 1에서 백업 안 된 경우)
+        # 백업 보장(Phase 1에서 백업 안 된 경우)
         backup_path = backup_root / path.relative_to(root)
         if not backup_path.exists():
             backup_path.parent.mkdir(parents=True, exist_ok=True)
@@ -325,6 +367,10 @@ def batch_edit_in_place(
         old_rel = path.relative_to(root).as_posix()
         path.rename(new_path)
         renames.append((old_rel, new_path.relative_to(root).as_posix()))
+        if item is None:  # 미지원 확장자 파일 — 결과 항목 신규 생성
+            item = BatchEditItem(path=str(path), relative_path=old_rel)
+            items.append(item)
+        by_path[str(new_path)] = item
         item.output_path = str(new_path)
         item.renamed_to = new_name
 

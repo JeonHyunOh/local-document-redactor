@@ -332,3 +332,76 @@ def test_batch_edit_in_place_skips_email_content_but_renames(tmp_path: Path, mak
     assert "포스코" in reloaded.subject and "대외비" in reloaded.body
     assert item.note is not None and "제자리" in item.note
     assert item.renamed_to == "메일.eml"
+
+
+# --------------------------------------------------------------------------- #
+# 형식 제거(.dwg/.png/.nwd) + 확장자 무관 파일명 정리 + pptx 배치
+# --------------------------------------------------------------------------- #
+def test_scan_all_files_returns_every_extension(tmp_path: Path):
+    _xlsx(tmp_path / "a.xlsx", "x")
+    (tmp_path / "b.dwg").write_bytes(b"dwg")
+    (tmp_path / "c.txt").write_text("t", encoding="utf-8")
+    (tmp_path / "~$lock.xlsx").write_bytes(b"lock")
+    names = {p.name for p in batch_service.scan_all_files(tmp_path, recursive=True)}
+    assert names == {"a.xlsx", "b.dwg", "c.txt"}
+
+
+def test_in_place_removes_target_suffixes_hard_delete(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "a.xlsx", "대외비 문서")
+    (root / "도면.dwg").write_bytes(b"dwg")
+    (root / "이미지.png").write_bytes(b"png")
+    (root / "모델.nwd").write_bytes(b"nwd")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("대외비"), excel_action=ExcelAction.CLEAR_CELL)
+
+    items = batch_service.batch_edit_in_place(
+        root, req, backup, recursive=True, remove_suffixes={".dwg", ".png", ".nwd"}
+    )
+    # 완전 삭제됨(백업 없음)
+    assert not (root / "도면.dwg").exists()
+    assert not (root / "이미지.png").exists()
+    assert not (root / "모델.nwd").exists()
+    assert not (backup / "도면.dwg").exists()
+    # 삭제 로그 기록
+    log = (backup / "_removed_log.txt").read_text(encoding="utf-8")
+    assert "도면.dwg" in log and "모델.nwd" in log
+    # 결과에 note
+    assert any(i.note and "완전 삭제" in i.note for i in items)
+    # 지원 파일은 정상 편집
+    assert load_workbook(root / "a.xlsx").active["A1"].value is None
+
+
+def test_in_place_removal_off_by_default(tmp_path: Path):
+    root = tmp_path / "src"
+    _xlsx(root / "a.xlsx", "대외비")
+    (root / "도면.dwg").write_bytes(b"dwg")
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)  # remove_suffixes 없음
+    assert (root / "도면.dwg").exists()  # 삭제 안 됨
+
+
+def test_in_place_renames_unsupported_extension_by_filename(tmp_path: Path):
+    root = tmp_path / "src"
+    root.mkdir(parents=True)
+    (root / "포스코_메모.txt").write_text("공개", encoding="utf-8")  # 미지원 형식, 파일명만 키워드
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코"), excel_action=ExcelAction.CLEAR_CELL)
+    items = batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    assert (root / "메모.txt").exists()  # 확장자 무관 파일명 정리
+    assert not (root / "포스코_메모.txt").exists()
+    assert any(i.renamed_to == "메모.txt" for i in items)
+
+
+def test_in_place_pptx_content_edited(tmp_path: Path, make_pptx):
+    root = tmp_path / "src"
+    make_pptx(root / "deck.pptx", title="포스코 제목", body_lines=["대외비 본문"])
+    backup = tmp_path / "src_backup"
+    req = EditRequest(criteria=_criteria("포스코", "대외비"), excel_action=ExcelAction.CLEAR_CELL)
+    batch_service.batch_edit_in_place(root, req, backup, recursive=True)
+
+    from document_redactor import pptx_service
+    assert pptx_service.search(root / "deck.pptx", req.criteria).total_matches == 0
+    assert (backup / "deck.pptx").exists()  # 원본 백업
