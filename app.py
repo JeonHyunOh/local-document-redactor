@@ -105,7 +105,10 @@ def _zip_folder(folder: Path) -> bytes:
 # 단일 파일 모드
 # =========================================================================== #
 def render_single_file() -> None:
-    uploaded = st.file_uploader("파일 업로드 (.xlsx / .xlsm / 텍스트 PDF)", type=["xlsx", "xlsm", "pdf"])
+    uploaded = st.file_uploader(
+        "파일 업로드 (.xlsx / .xlsm / 텍스트 PDF / .msg / .eml)",
+        type=["xlsx", "xlsm", "pdf", "msg", "eml"],
+    )
 
     if st.button("🔍 검사하기", disabled=not (uploaded and keywords), help="파일을 수정하지 않고 검사만 합니다."):
         for key in ("s_report", "s_saved", "s_edit", "s_verify", "s_editor", "s_approve", "s_all_selected"):
@@ -146,6 +149,50 @@ def render_single_file() -> None:
             )
         else:
             st.info("발견된 키워드가 없습니다.")
+        return
+
+    # 이메일(.msg/.eml): 삭제 방식 선택 없이 승인 → .md 산출
+    if report.file_type in (FileType.MSG, FileType.EML):
+        st.info("이메일은 서식·이미지·첨부 내용이 보존되지 않는 평문 `.md`로 정리됩니다. "
+                "원본 이메일은 수정되지 않습니다.")
+        st.dataframe(
+            [{"필드": m.field, "줄": m.line, "키워드": m.keyword, "개수": m.count, "문맥": m.context}
+             for m in report.email_matches],
+            use_container_width=True,
+        )
+        approved = st.checkbox("위 키워드를 제거한 .md 산출을 승인합니다.", key="s_approve_email")
+        if st.button("🗑️ 승인하고 .md 생성", disabled=not approved, type="primary"):
+            try:
+                request = EditRequest(criteria=report.criteria)
+                edit_result = file_service.apply_edit(st.session_state.s_saved, request, OUTPUT_DIR)
+                st.session_state.s_edit = edit_result
+                st.session_state.s_verify = file_service.verify(Path(edit_result.output_path), report.criteria)
+                st.session_state.s_all_selected = True
+            except Exception as exc:
+                st.error("`.md` 생성 중 오류가 발생했습니다. 결과 파일을 제공하지 않습니다.")
+                st.exception(exc)
+
+        edit_result = st.session_state.get("s_edit")
+        verification = st.session_state.get("s_verify")
+        if edit_result is None or verification is None:
+            return
+
+        st.subheader("처리 결과")
+        st.metric("제거된 키워드", edit_result.redactions_applied)
+        if verification.clean:
+            st.success("재검증 완료: 산출 .md에서 키워드가 확인되지 않습니다.")
+        else:
+            remaining = verification.remaining.total_matches if verification.remaining else 0
+            st.error(f"재검증 실패: .md에 키워드가 {remaining}건 남아 있습니다.")
+
+        src_stem = Path(name_redactor.redact_filename(Path(st.session_state.s_saved).name, keywords, case_sensitive)).stem
+        dl_name = f"{src_stem}_redacted.md"
+        st.download_button(
+            "📥 정리된 .md 다운로드",
+            data=Path(edit_result.output_path).read_bytes(),
+            file_name=dl_name,
+            use_container_width=True,
+        )
         return
 
     # 삭제 방식 (Excel만)
