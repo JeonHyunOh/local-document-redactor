@@ -28,3 +28,56 @@ def test_searchreport_total_includes_email_matches():
         ],
     )
     assert report.total_matches == 2
+
+
+from document_redactor import email_service
+from document_redactor.email_service import EmailContent
+
+
+def _content(**kw):
+    base = dict(subject="", sender="", to="", cc="", date="", body="", attachments=[])
+    base.update(kw)
+    return EmailContent(**base)
+
+
+def test_render_markdown_omits_empty_fields():
+    md = email_service.render_markdown(_content(subject="대외비 건", sender="홍길동"))
+    assert "# 대외비 건" in md
+    assert "- 보낸사람: 홍길동" in md
+    assert "받는사람" not in md   # to 비어있으면 줄 생략
+
+
+def test_render_markdown_lists_attachments_and_body():
+    md = email_service.render_markdown(
+        _content(subject="s", body="본문 내용", attachments=["a.xlsx", "b.pdf"])
+    )
+    assert "- 첨부파일: a.xlsx, b.pdf" in md
+    assert "본문 내용" in md
+
+
+def test_render_markdown_empty_body_placeholder():
+    md = email_service.render_markdown(_content(subject="s"))
+    assert "(본문 텍스트 없음)" in md
+
+
+def test_find_matches_locates_keyword_in_body_with_field_and_count():
+    content = _content(subject="공개", body="포스코 포스코 관련")
+    matches = email_service._find_matches(content, SearchCriteria(keywords=["포스코"]), "a.eml")
+    assert len(matches) == 1
+    m = matches[0]
+    assert m.field == "본문" and m.count == 2 and "포스코" in m.context
+
+
+def test_find_matches_in_subject_and_attachment():
+    content = _content(subject="포스코 보고", attachments=["포스코_첨부.xlsx"])
+    kws = SearchCriteria(keywords=["포스코"])
+    fields = {m.field for m in email_service._find_matches(content, kws, "a.eml")}
+    assert "제목" in fields and "첨부" in fields
+
+
+def test_find_matches_case_insensitive_default_and_sensitive():
+    content = _content(subject="POSCO note")
+    assert email_service._find_matches(content, SearchCriteria(keywords=["posco"]), "a")
+    assert not email_service._find_matches(
+        content, SearchCriteria(keywords=["posco"], case_sensitive=True), "a"
+    )
