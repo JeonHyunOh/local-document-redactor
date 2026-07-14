@@ -162,3 +162,13 @@ def test_unsupported_extension_rejected(tmp_path: Path):
     bad.write_bytes(b"nope")
     with pytest.raises(ValueError, match="지원하지 않는"):
         pdf_service.search(bad, _criteria("x"))
+
+
+def test_pdf_pattern_without_keyword(tmp_path: Path):
+    # ASCII 패턴(이메일·전화)을 키워드 없이 redaction
+    p = _make_pdf(tmp_path / "a.pdf", ["Contact 010-1234-5678 email john@example.com"])
+    req = EditRequest(criteria=SearchCriteria(keywords=[]))
+    rep = pdf_service.search(p, req.criteria)
+    assert rep.total_matches >= 2
+    res = pdf_service.apply_edit(p, req, tmp_path / "out")
+    assert pdf_service.verify(Path(res.output_path), req.criteria).clean

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
+from . import pattern_matcher
 from .models import (
     EditRequest,
     EditResult,
@@ -85,6 +86,26 @@ def search(path: Path, criteria: SearchCriteria) -> SearchReport:
                         rects=[tuple(r) for r in rects],
                     )
                 )
+            # 정형 개인정보 패턴: 텍스트에서 매칭값을 찾아 그 값을 search_for로 위치 확인
+            pattern_labels: dict[str, str] = {}
+            for label, value in pattern_matcher.find_patterns(
+                page_text, criteria.redact_account_numbers
+            ):
+                pattern_labels.setdefault(value, label)
+            for value, label in pattern_labels.items():
+                rects = _page_search(page, value)
+                if not rects:
+                    continue
+                matches.append(
+                    PdfMatch(
+                        file_name=path.name,
+                        page=page_index + 1,
+                        keyword=f"[{label}]",
+                        count=len(rects),
+                        context=value,
+                        rects=[tuple(r) for r in rects],
+                    )
+                )
 
     notes: list[str] = []
     if not matches:
@@ -151,6 +172,17 @@ def apply_edit(
             for keyword in keywords:
                 rects = _page_search(page, keyword)
                 for rect in rects:
+                    page.add_redact_annot(rect)
+                    page_redactions += 1
+            # 패턴은 선택과 무관하게 항상 redaction한다(개인정보 자동 삭제).
+            pattern_values = {
+                value
+                for _, value in pattern_matcher.find_patterns(
+                    page.get_text(), criteria.redact_account_numbers
+                )
+            }
+            for value in pattern_values:
+                for rect in _page_search(page, value):
                     page.add_redact_annot(rect)
                     page_redactions += 1
             if page_redactions:
