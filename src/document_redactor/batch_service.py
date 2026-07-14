@@ -26,6 +26,7 @@ ProgressCallback = Callable[[int, int, str], None]
 
 _SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".pdf", ".msg", ".eml", ".pptx"}
 _EMAIL_SUFFIXES = {".msg", ".eml"}
+_REMOVED_LOG_NAME = "_removed_log.txt"  # 대상 폴더에 남기는 삭제 기록(도구 산출물, rename 대상 제외)
 
 
 def scan_folder(root: Path, recursive: bool = True) -> list[Path]:
@@ -285,9 +286,9 @@ def batch_edit_in_place(
             except Exception as exc:  # noqa: BLE001 - 사유 기록 후 계속
                 items.append(BatchEditItem(path=str(path), relative_path=rel, error=str(exc)))
     if removed_counts:
-        backup_root.mkdir(parents=True, exist_ok=True)
+        # 삭제 기록은 대상 폴더 안에 남긴다(확장자별 개수만, 파일명 미기록).
         lines = [f"{ext} {count}개 삭제" for ext, count in sorted(removed_counts.items())]
-        (backup_root / "_removed_log.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (root / "_removed_log.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # --- Phase 1: 내용 편집(기존 동작) ---
     for index, path in enumerate(files, start=1):
@@ -391,17 +392,22 @@ def batch_edit_in_place(
 
     # 2a) 파일 rename — 확장자 무관 모든 파일. Phase 1 실패(error) 파일은 건드리지 않는다.
     for path in scan_all_files(root, recursive):
+        if path.name == _REMOVED_LOG_NAME:
+            continue  # 도구가 만든 삭제 기록은 이름 정리 대상에서 제외(훼손 방지)
         item = by_path.get(str(path))
         if item is not None and item.error:
             continue
         if not name_redactor.name_contains_keyword(path.name, keywords, cs):
             continue
+        cleaned = name_redactor.redact_filename(path.name, keywords, cs)
+        if cleaned == path.name:
+            continue  # 키워드가 확장자에만 있는 등, 정리해도 이름이 그대로면 rename하지 않음
         # 백업 보장(Phase 1에서 백업 안 된 경우)
         backup_path = backup_root / path.relative_to(root)
         if not backup_path.exists():
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, backup_path)
-        new_name = _disk_unique(path.parent, name_redactor.redact_filename(path.name, keywords, cs))
+        new_name = _disk_unique(path.parent, cleaned)
         new_path = path.parent / new_name
         old_rel = path.relative_to(root).as_posix()
         path.rename(new_path)
