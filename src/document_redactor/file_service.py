@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import email_service, excel_service, pdf_service
+from . import email_service, excel_service, pdf_service, pptx_service
 from .models import (
     EditRequest,
     EditResult,
@@ -25,6 +25,7 @@ _EXTENSION_MAP: dict[str, FileType] = {
     ".pdf": FileType.PDF,
     ".msg": FileType.MSG,
     ".eml": FileType.EML,
+    ".pptx": FileType.PPTX,
 }
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._가-힣-]+")
 
@@ -40,7 +41,7 @@ def detect_file_type(filename: str) -> FileType:
     if file_type is None:
         raise UnsupportedFileError(
             f"지원하지 않는 파일 형식입니다: {suffix or '(확장자 없음)'}. "
-            "지원 형식은 .xlsx, .xlsm, .pdf, .msg, .eml 입니다. "
+            "지원 형식은 .xlsx, .xlsm, .pdf, .msg, .eml, .pptx 입니다. "
             "(.xls, 암호화 파일, 스캔 전용 PDF는 지원하지 않습니다.)"
         )
     return file_type
@@ -74,6 +75,8 @@ def _service_for(path: Path):
     file_type = detect_file_type(path.name)
     if file_type in (FileType.MSG, FileType.EML):
         return email_service
+    if file_type is FileType.PPTX:
+        return pptx_service
     if file_type is FileType.PDF:
         return pdf_service
     return excel_service
