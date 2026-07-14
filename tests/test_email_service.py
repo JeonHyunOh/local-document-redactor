@@ -164,3 +164,13 @@ def test_roundtrip_msg(make_msg, tmp_path):
     assert Path(result.output_path).name == "m_redacted.md"
     verification = email_service.verify(Path(result.output_path), req.criteria)
     assert verification.clean is True
+
+
+def test_email_pattern_without_keyword(make_eml, tmp_path):
+    p = make_eml(tmp_path / "m.eml", subject="연락 010-1234-5678", body="메일 a@b.com")
+    req = EditRequest(criteria=SearchCriteria(keywords=[]))
+    rep = email_service.search(p, req.criteria)
+    assert rep.total_matches >= 2
+    out = tmp_path / "out"
+    res = email_service.apply_edit(p, req, out)
+    assert email_service.verify(Path(res.output_path), req.criteria).clean

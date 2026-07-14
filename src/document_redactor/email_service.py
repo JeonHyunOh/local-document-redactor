@@ -13,7 +13,7 @@ from email import message_from_bytes
 from email.policy import default as _email_policy
 from pathlib import Path
 
-from . import keyword_matcher
+from . import keyword_matcher, pattern_matcher
 from .models import (
     EditRequest,
     EditResult,
@@ -98,6 +98,19 @@ def _find_matches(
                         context=text,
                     )
                 )
+        for plabel, _value in pattern_matcher.find_patterns(
+            text, criteria.redact_account_numbers
+        ):
+            out.append(
+                EmailMatch(
+                    file_name=file_name,
+                    field=label or "본문",
+                    line=index,
+                    keyword=f"[{plabel}]",
+                    count=1,
+                    context=text,
+                )
+            )
     return out
 
 
@@ -198,8 +211,12 @@ def apply_edit(
     text = render_markdown(content)
     keywords = request.criteria.keywords
     case_sensitive = request.criteria.case_sensitive
+    include_account = request.criteria.redact_account_numbers
     redacted = keyword_matcher.remove_keywords(text, keywords, case_sensitive)
-    removed = _occurrences(text, keywords, case_sensitive)
+    redacted = pattern_matcher.remove_patterns(redacted, include_account)
+    removed = _occurrences(text, keywords, case_sensitive) + len(
+        pattern_matcher.find_patterns(text, include_account)
+    )
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -235,6 +252,19 @@ def verify(output_path: Path, criteria: SearchCriteria) -> VerificationResult:
                         context=line,
                     )
                 )
+        for plabel, _value in pattern_matcher.find_patterns(
+            line, criteria.redact_account_numbers
+        ):
+            matches.append(
+                EmailMatch(
+                    file_name=output_path.name,
+                    field="본문",
+                    line=index,
+                    keyword=f"[{plabel}]",
+                    count=1,
+                    context=line,
+                )
+            )
     remaining = (
         SearchReport(
             file_name=output_path.name,
