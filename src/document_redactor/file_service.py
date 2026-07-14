@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import excel_service, pdf_service
+from . import email_service, excel_service, pdf_service
 from .models import (
     EditRequest,
     EditResult,
@@ -23,6 +23,8 @@ _EXTENSION_MAP: dict[str, FileType] = {
     ".xlsx": FileType.XLSX,
     ".xlsm": FileType.XLSM,
     ".pdf": FileType.PDF,
+    ".msg": FileType.MSG,
+    ".eml": FileType.EML,
 }
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._가-힣-]+")
 
@@ -38,7 +40,7 @@ def detect_file_type(filename: str) -> FileType:
     if file_type is None:
         raise UnsupportedFileError(
             f"지원하지 않는 파일 형식입니다: {suffix or '(확장자 없음)'}. "
-            "지원 형식은 .xlsx, .xlsm, .pdf 입니다. "
+            "지원 형식은 .xlsx, .xlsm, .pdf, .msg, .eml 입니다. "
             "(.xls, 암호화 파일, 스캔 전용 PDF는 지원하지 않습니다.)"
         )
     return file_type
@@ -61,9 +63,20 @@ def save_upload(data: bytes, filename: str, dest_dir: Path) -> Path:
 
 
 def _service_for(path: Path):
-    """파일 경로에 맞는 서비스 모듈을 반환한다."""
+    """파일 경로에 맞는 서비스 모듈을 반환한다.
+
+    산출물 재검증을 위해 .md는 email_service로 라우팅한다(업로드 검증에는 .md를
+    포함하지 않으므로 사용자가 .md를 입력할 수는 없다).
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".md":
+        return email_service
     file_type = detect_file_type(path.name)
-    return pdf_service if file_type is FileType.PDF else excel_service
+    if file_type in (FileType.MSG, FileType.EML):
+        return email_service
+    if file_type is FileType.PDF:
+        return pdf_service
+    return excel_service
 
 
 def search(path: Path, criteria: SearchCriteria) -> SearchReport:
