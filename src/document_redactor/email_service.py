@@ -15,9 +15,14 @@ from pathlib import Path
 
 from . import keyword_matcher
 from .models import (
+    EditRequest,
+    EditResult,
     EmailMatch,
+    FileType,
     SearchCriteria,
     SearchMode,
+    SearchReport,
+    VerificationResult,
 )
 
 _BODY_PLACEHOLDER = "(본문 텍스트 없음)"
@@ -154,3 +159,90 @@ def _load(path: Path) -> EmailContent:
     if suffix == ".msg":
         return _load_msg(path)
     raise ValueError(f"이메일 형식이 아닙니다: {suffix or '(확장자 없음)'}")
+
+
+def _occurrences(text: str, keywords: list[str], case_sensitive: bool) -> int:
+    """전체 텍스트에서 키워드(부분문자열) 총 발견 횟수. 제거 건수 집계용."""
+    total = 0
+    haystack = text if case_sensitive else text.casefold()
+    for keyword in keyword_matcher.normalize_keywords(keywords):
+        needle = keyword if case_sensitive else keyword.casefold()
+        if needle:
+            total += haystack.count(needle)
+    return total
+
+
+def search(path: Path, criteria: SearchCriteria) -> SearchReport:
+    """이메일을 파싱·렌더해 키워드를 검색한다(파일 무수정)."""
+    path = Path(path)
+    content = _load(path)
+    file_type = FileType.MSG if path.suffix.lower() == ".msg" else FileType.EML
+    return SearchReport(
+        file_name=path.name,
+        file_type=file_type,
+        criteria=criteria,
+        email_matches=_find_matches(content, criteria, path.name),
+        notes=[_RENDER_NOTE],
+    )
+
+
+def apply_edit(
+    path: Path, request: EditRequest, output_dir: Path, selected=None
+) -> EditResult:
+    """이메일을 렌더한 뒤 키워드를 제거해 <stem>_redacted.md로 저장한다.
+
+    selected는 무시한다(이메일은 항상 전체 키워드 제거). 원본 이메일은 편집하지 않는다.
+    """
+    path = Path(path)
+    content = _load(path)
+    text = render_markdown(content)
+    keywords = request.criteria.keywords
+    case_sensitive = request.criteria.case_sensitive
+    redacted = keyword_matcher.remove_keywords(text, keywords, case_sensitive)
+    removed = _occurrences(text, keywords, case_sensitive)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{path.stem}_redacted.md"
+    out_path.write_text(redacted, encoding="utf-8")
+
+    return EditResult(
+        source_name=path.name,
+        output_path=str(out_path),
+        file_type=FileType.MD,
+        redactions_applied=removed,
+        log=[f"이메일에서 키워드 {removed}건 제거 → {out_path.name}"],
+    )
+
+
+def verify(output_path: Path, criteria: SearchCriteria) -> VerificationResult:
+    """산출된 .md 텍스트를 재검색해 키워드 잔존 여부를 확인한다."""
+    output_path = Path(output_path)
+    text = output_path.read_text(encoding="utf-8")
+    matches: list[EmailMatch] = []
+    keywords = keyword_matcher.normalize_keywords(criteria.keywords)
+    for index, line in enumerate(text.split("\n"), start=1):
+        for keyword in keywords:
+            n = _count(line, keyword, criteria.mode, criteria.case_sensitive)
+            if n:
+                matches.append(
+                    EmailMatch(
+                        file_name=output_path.name,
+                        field="본문",
+                        line=index,
+                        keyword=keyword,
+                        count=n,
+                        context=line,
+                    )
+                )
+    remaining = (
+        SearchReport(
+            file_name=output_path.name,
+            file_type=FileType.MD,
+            criteria=criteria,
+            email_matches=matches,
+        )
+        if matches
+        else None
+    )
+    return VerificationResult(output_path=str(output_path), clean=not matches, remaining=remaining)
